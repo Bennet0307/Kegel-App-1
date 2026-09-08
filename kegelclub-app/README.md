@@ -2,6 +2,10 @@
 
 This is an [Expo](https://expo.dev) project created with [`create-expo-app`](https://www.npmjs.com/package/create-expo-app).
 
+> Für das Kegelclub-App-Projekt: Supabase-Setup (lokal & self-hosted),
+> Projektkontext und Testanleitung stehen im [README](../README.md)
+> und [CLAUDE.md](../CLAUDE.md) im Repo-Root.
+
 ## Get started
 
 1. Install dependencies
