@@ -235,7 +235,8 @@ mehreren Test-Accounts gegen die lokale Supabase-Instanz getestet.
    Session-Erfassung (1–2 Spieltypen) + automatische Kegelkasse mit
    Salden.
 3. **Phase 2 – Ausbau:** weitere Spieltypen + konfigurierbare
-   Strafregeln, Statistiken/Ranglisten, Terminplanung mit Push,
+   Strafregeln, Statistiken/Ranglisten, Terminplanung mit Push
+   (inkl. Regeltermine/Serien, siehe "Offene Punkte"),
    Live-Tafelmodus (Realtime).
 4. **Phase 3 – Finanzen & Turniere:** SEPA-XML-Export (Edge Function),
    Beitrags-/Rechnungswesen, Mannschaften/Turniere, Offline-Sync
@@ -257,6 +258,29 @@ mehreren Test-Accounts gegen die lokale Supabase-Instanz getestet.
 
 ## Offene Punkte / noch nicht entschieden
 
+- **Regeltermine / Serien-Kegelabende** (Idee, noch nicht umgesetzt):
+  Wiederkehrende Termine konfigurierbar machen, z.B. "monatlich, erster
+  Freitag im Monat". Zusätzlich sollen einzelne Termine der Serie
+  nachträglich verschoben oder abgesagt werden können, ohne die
+  restliche Serie zu beeinflussen (Ausnahmen/Exceptions pro Termin,
+  ähnlich wiederkehrenden Terminen in Kalender-Apps: eine
+  Wiederholungsregel + pro `event` optional ein Verweis auf die
+  erzeugende Serie und ein "abweicht von Serie"-Flag). Betrifft
+  `event` (siehe Kern-Datenmodell) und die Screens `events.tsx` /
+  `create-event.tsx`. Gehört in Phase 2 (Terminplanung), siehe Roadmap.
+- **Einchecken / Ankunftszeit erfassen** (Idee, noch nicht umgesetzt):
+  Zusätzlich zur Zu-/Absage (bereits in `attendance` umgesetzt) die
+  tatsächliche Ankunftszeit am Kegelabend festhalten – entweder
+  Self-Check-in durch das Mitglied selbst oder gesteuert durch den
+  Admin/Kassierer. Das ist genau die "echte Anwesenheitserfassung",
+  die beim `attendance`-Eintrag im Kern-Datenmodell schon als noch
+  offen vermerkt ist (vermutlich ein `checked_in_at timestamptz` auf
+  `attendance`, getrennt von `status`, damit Zusage/Absage und
+  tatsächliches Erscheinen unabhängig bleiben). Darauf aufbauend:
+  automatische Verspätungsstrafe über die geplanten `penalty_rule`/
+  `penalty`-Tabellen (z.B. 0,10 €/Minute nach `event.starts_at`), die
+  dann als `transaction` in die Kegelkasse einfließt. Gehört fachlich
+  zu Phase 1/2 (Kegelkasse) bzw. Phase 3 (Strafregeln), siehe Roadmap.
 - Konkrete Spielregeln/Strafregeln-Konfiguration (wie flexibel muss die
   Regel-Engine sein?)
 - SEPA-Lastschrift-Anbindung im Detail (Gläubiger-ID, Mandatsverwaltung)
