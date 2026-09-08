@@ -16,6 +16,8 @@ export default function RootLayout() {
         <Stack.Screen name="login" options={{ title: 'Anmelden' }} />
         <Stack.Screen name="create-club" options={{ title: 'Club anlegen' }} />
         <Stack.Screen name="join-club" options={{ title: 'Club beitreten' }} />
+        <Stack.Screen name="events" options={{ title: 'Kegelabende' }} />
+        <Stack.Screen name="create-event" options={{ title: 'Kegelabend anlegen' }} />
       </Stack>
     </ThemeProvider>
   );

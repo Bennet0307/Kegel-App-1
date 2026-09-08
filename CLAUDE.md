@@ -34,7 +34,11 @@ Zielplattformen: **Mobile (iOS/Android) und Web**, eine gemeinsame Codebase.
   - Routing: **Expo Router** (dateibasiert, `src/app/`). Tabs liegen
     in der Gruppe `src/app/(tabs)/` (Home, Explore); das Root-Layout
     `src/app/_layout.tsx` ist ein `Stack` mit der `(tabs)`-Gruppe
-    sowie `login`, `create-club` und `join-club` als eigenen Screens.
+    sowie `login`, `create-club`, `join-club`, `events` und
+    `create-event` als eigenen Screens. Nach Login/Signup prüft
+    `login.tsx` per `getCurrentMember()` (`lib/member.ts`), ob der
+    User schon Mitglied irgendeines Clubs ist, und leitet dann direkt
+    zu `/events` weiter statt zu `/create-club`.
   - State-Management: leichtgewichtig halten (z.B. Zustand für Client-State,
     TanStack Query für Server-State/Caching der Supabase-Queries) –
     kein Redux-Overhead für dieses Projektformat.
@@ -139,6 +143,14 @@ Liegen in `supabase/migrations/`, chronologisch:
    Mitglieder: security-definer RPC-Funktion, die einen Invite-Code
    zur `club_id` auflöst, Doppel-Mitgliedschaft ausschließt und den
    aufrufenden User als `'mitglied'` einträgt (Details siehe oben).
+7. **`attendance`** – legt `attendance` an (Zu-/Absage pro Event und
+   Mitglied, `status` ∈ `offen`/`zugesagt`/`abgesagt`, unique auf
+   `(event_id, member_id)`). Sichtbar für alle Mitglieder desselben
+   Clubs (`attendance_select_same_club`, über `auth_club_ids()` via
+   `event`); jedes Mitglied darf nur seine eigene Zu-/Absage schreiben
+   (`attendance_write_own`, über die neue Hilfsfunktion
+   `auth_member_ids()` – analog zu `auth_club_ids()`, um RLS-Rekursion
+   auf `member` zu vermeiden, siehe oben).
 
 ## Kern-Datenmodell (Ausgangspunkt, teils noch nicht als Migration umgesetzt)
 
@@ -147,7 +159,11 @@ Liegen in `supabase/migrations/`, chronologisch:
   role, joined_at) ✅ umgesetzt
 - `event` – Termin (id, club_id, type, title, starts_at, location, status) ✅ umgesetzt
 - `guest` – Gastkegler ohne Konto — noch offen
-- `attendance` – Zu-/Absage/Anwesenheit pro Event und Mitglied — noch offen
+- `attendance` – Zu-/Absage pro Event und Mitglied (id, event_id,
+  member_id, status, responded_at) ✅ umgesetzt. Echte "war wirklich
+  da"-Anwesenheitserfassung (Check-in am Kegelabend selbst, unabhängig
+  von der Zusage) ist bewusst noch nicht Teil dieser Tabelle — noch
+  offen, siehe unten.
 - `game`/`session` – ein gespieltes Spiel pro Event — noch offen
 - `score`/`throw` – Ergebnis-/Wurferfassung — noch offen
 - `penalty_rule` / `penalty` – frei konfigurierbare Strafregeln — noch offen
@@ -173,13 +189,27 @@ Statistiken/Ranglisten werden als Postgres Views bzw. Funktionen über
 - `kegelclub-app/src/app/join-club.tsx` – nimmt einen Einladungscode
   entgegen, ruft die RPC `join_club_by_invite_code` auf und zeigt den
   Club-Namen bei Erfolg an. Verlinkt zurück auf `/create-club`.
+- `kegelclub-app/src/app/events.tsx` – listet die Kegelabende des
+  eigenen Clubs (`getCurrentMember()` → `club_id`), zeigt pro Event
+  die eigene Zu-/Absage und erlaubt sie per Tap zu ändern (Upsert auf
+  `attendance`, `onConflict: 'event_id,member_id'`). Admins/Kassierer
+  sehen zusätzlich einen Link zu `/create-event`.
+- `kegelclub-app/src/app/create-event.tsx` – legt einen Kegelabend
+  (`event`, `type: 'kegelabend'`) für den eigenen Club an; Datum/
+  Uhrzeit aktuell als zwei Text-Felder (`JJJJ-MM-TT` / `HH:MM`), kein
+  Date-Picker-Package eingebunden.
+- `kegelclub-app/src/lib/member.ts` – `getCurrentMember()`: liest die
+  `member`-Zeile des eingeloggten Users (id, club_id, role,
+  display_name). Nimmt aktuell die erste gefundene Zeile – Mitglieder
+  in mehreren Clubs (Schema erlaubt das) werden noch nicht
+  unterstützt, es gibt keine Club-Auswahl/-Switching-UI.
 - `kegelclub-app/src/app/(tabs)/` – ursprüngliches Expo-Router-Tabs-Template
   (Home/Explore), unverändert bis auf den Umzug in die `(tabs)`-Gruppe.
 
-Damit sind die Pfade Auth → Club anlegen → RLS-geschütztes Schreiben
-sowie Auth → Club per Einladungscode beitreten je einmal end-to-end
-verdrahtet und im Browser mit zwei Test-Accounts gegen die lokale
-Supabase-Instanz getestet.
+Damit sind die Pfade Auth → Club anlegen → RLS-geschütztes Schreiben,
+Auth → Club per Einladungscode beitreten sowie Kegelabend anlegen →
+Zu-/Absage je einmal end-to-end verdrahtet und im Browser mit
+mehreren Test-Accounts gegen die lokale Supabase-Instanz getestet.
 
 ## DSGVO-Hinweise (gilt für die gesamte Entwicklung)
 
@@ -200,8 +230,8 @@ Supabase-Instanz getestet.
 1. **Phase 0 – Fundament:** ✅ Supabase-Projekt + erste Migrationen
    versioniert, RLS von Anfang an, Expo-Projekt mit Supabase-Client
    verbunden, erster vertikaler Durchstich (Auth + Club anlegen) steht.
-2. **Phase 1 – MVP:** ✅ Einladungscode-Beitritt für weitere Mitglieder.
-   Noch offen: Kegelabend anlegen + Anwesenheit, einfache
+2. **Phase 1 – MVP:** ✅ Einladungscode-Beitritt für weitere Mitglieder,
+   ✅ Kegelabend anlegen + Zu-/Absage. Noch offen: einfache
    Session-Erfassung (1–2 Spieltypen) + automatische Kegelkasse mit
    Salden.
 3. **Phase 2 – Ausbau:** weitere Spieltypen + konfigurierbare

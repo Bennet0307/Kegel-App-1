@@ -52,6 +52,12 @@ export default function JoinClubScreen() {
           <ThemedText>
             Du bist jetzt Mitglied von <ThemedText type="smallBold">{club.club_name}</ThemedText>.
           </ThemedText>
+
+          <Pressable
+            style={[styles.button, { backgroundColor: theme.backgroundElement }]}
+            onPress={() => router.replace('/events')}>
+            <ThemedText type="smallBold">Weiter zu den Kegelabenden</ThemedText>
+          </Pressable>
         </SafeAreaView>
       </ThemedView>
     );

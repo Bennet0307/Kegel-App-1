@@ -10,62 +10,87 @@ import { useTheme } from '@/hooks/use-theme';
 import { getCurrentMember } from '@/lib/member';
 import { supabase } from '@/lib/supabase';
 
-export default function LoginScreen() {
+export default function CreateEventScreen() {
   const theme = useTheme();
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
+  const [title, setTitle] = useState('');
+  const [date, setDate] = useState('');
+  const [time, setTime] = useState('');
+  const [location, setLocation] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  async function handleAuth(mode: 'signUp' | 'signIn') {
-    if (!email || !password) {
-      setError('Bitte E-Mail und Passwort eingeben.');
+  async function handleCreate() {
+    if (!title || !date || !time) {
+      setError('Bitte Titel, Datum und Uhrzeit angeben.');
+      return;
+    }
+
+    const startsAt = new Date(`${date}T${time}`);
+    if (Number.isNaN(startsAt.getTime())) {
+      setError('Datum/Uhrzeit ungültig. Format: JJJJ-MM-TT und HH:MM.');
       return;
     }
 
     setLoading(true);
     setError(null);
 
-    const { error: authError } =
-      mode === 'signUp'
-        ? await supabase.auth.signUp({ email, password })
-        : await supabase.auth.signInWithPassword({ email, password });
-
-    setLoading(false);
-
-    if (authError) {
-      setError(authError.message);
+    const member = await getCurrentMember();
+    if (!member) {
+      setLoading(false);
+      setError('Kein Club gefunden.');
       return;
     }
 
-    const member = await getCurrentMember();
-    router.replace(member ? '/events' : '/create-club');
+    const { error: insertError } = await supabase.from('event').insert({
+      club_id: member.club_id,
+      title,
+      starts_at: startsAt.toISOString(),
+      location: location || null,
+    });
+
+    setLoading(false);
+
+    if (insertError) {
+      setError(insertError.message);
+      return;
+    }
+
+    router.replace('/events');
   }
 
   return (
     <ThemedView style={styles.container}>
       <SafeAreaView style={styles.safeArea}>
         <ThemedText type="title" style={styles.title}>
-          Anmelden
+          Kegelabend anlegen
         </ThemedText>
 
         <TextInput
-          value={email}
-          onChangeText={setEmail}
-          placeholder="E-Mail"
+          value={title}
+          onChangeText={setTitle}
+          placeholder="Titel"
           placeholderTextColor={theme.textSecondary}
-          autoCapitalize="none"
-          autoComplete="email"
-          keyboardType="email-address"
           style={[styles.input, { color: theme.text, backgroundColor: theme.backgroundElement }]}
         />
         <TextInput
-          value={password}
-          onChangeText={setPassword}
-          placeholder="Passwort"
+          value={date}
+          onChangeText={setDate}
+          placeholder="Datum (JJJJ-MM-TT)"
           placeholderTextColor={theme.textSecondary}
-          autoCapitalize="none"
-          secureTextEntry
+          style={[styles.input, { color: theme.text, backgroundColor: theme.backgroundElement }]}
+        />
+        <TextInput
+          value={time}
+          onChangeText={setTime}
+          placeholder="Uhrzeit (HH:MM)"
+          placeholderTextColor={theme.textSecondary}
+          style={[styles.input, { color: theme.text, backgroundColor: theme.backgroundElement }]}
+        />
+        <TextInput
+          value={location}
+          onChangeText={setLocation}
+          placeholder="Ort (optional)"
+          placeholderTextColor={theme.textSecondary}
           style={[styles.input, { color: theme.text, backgroundColor: theme.backgroundElement }]}
         />
 
@@ -74,18 +99,11 @@ export default function LoginScreen() {
         {loading ? (
           <ActivityIndicator />
         ) : (
-          <ThemedView style={styles.buttonRow}>
-            <Pressable
-              style={[styles.button, { backgroundColor: theme.backgroundElement }]}
-              onPress={() => handleAuth('signIn')}>
-              <ThemedText type="smallBold">Anmelden</ThemedText>
-            </Pressable>
-            <Pressable
-              style={[styles.button, { backgroundColor: theme.backgroundElement }]}
-              onPress={() => handleAuth('signUp')}>
-              <ThemedText type="smallBold">Registrieren</ThemedText>
-            </Pressable>
-          </ThemedView>
+          <Pressable
+            style={[styles.button, { backgroundColor: theme.backgroundElement }]}
+            onPress={handleCreate}>
+            <ThemedText type="smallBold">Kegelabend anlegen</ThemedText>
+          </Pressable>
         )}
       </SafeAreaView>
     </ThemedView>
@@ -119,12 +137,7 @@ const styles = StyleSheet.create({
   error: {
     color: '#d33',
   },
-  buttonRow: {
-    flexDirection: 'row',
-    gap: Spacing.two,
-  },
   button: {
-    flex: 1,
     height: 48,
     borderRadius: Spacing.two,
     alignItems: 'center',

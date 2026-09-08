@@ -70,6 +70,12 @@ export default function CreateClubScreen() {
           </ThemedText>
           <ThemedText>Club-ID: {club.id}</ThemedText>
           <ThemedText type="smallBold">Einladungscode: {club.invite_code}</ThemedText>
+
+          <Pressable
+            style={[styles.button, { backgroundColor: theme.backgroundElement }]}
+            onPress={() => router.replace('/events')}>
+            <ThemedText type="smallBold">Weiter zu den Kegelabenden</ThemedText>
+          </Pressable>
         </SafeAreaView>
       </ThemedView>
     );
