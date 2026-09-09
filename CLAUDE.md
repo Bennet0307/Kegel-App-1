@@ -34,8 +34,9 @@ Zielplattformen: **Mobile (iOS/Android) und Web**, eine gemeinsame Codebase.
   - Routing: **Expo Router** (dateibasiert, `src/app/`). Tabs liegen
     in der Gruppe `src/app/(tabs)/` (Home, Explore); das Root-Layout
     `src/app/_layout.tsx` ist ein `Stack` mit der `(tabs)`-Gruppe
-    sowie `login`, `create-club`, `join-club`, `events` und
-    `create-event` als eigenen Screens. Nach Login/Signup prüft
+    sowie `login`, `create-club`, `join-club`, `events`,
+    `create-event`, `enter-score` und `kasse` als eigenen Screens.
+    Nach Login/Signup prüft
     `login.tsx` per `getCurrentMember()` (`lib/member.ts`), ob der
     User schon Mitglied irgendeines Clubs ist, und leitet dann direkt
     zu `/events` weiter statt zu `/create-club`.
@@ -56,6 +57,18 @@ Zielplattformen: **Mobile (iOS/Android) und Web**, eine gemeinsame Codebase.
     Ergebnissen; kein eigener Server-Code nötig; Open Source →
     kein Lock-in, jederzeit migrierbar (z.B. auf self-hosted Supabase
     auf Hetzner, falls DSGVO-Anforderungen das später nötig machen).
+  - **Automatische Kegelkasse:** die RPC `record_game_scores` erfasst
+    Ergebnisse (`game`/`score`) und bucht dabei automatisch pro
+    Mitglied mit Score eine `transaction` vom Typ `'einzahlung'`
+    (`club.kegelgeld_cents`, Default 2,00 €) – ein Vorgang, kein
+    zweiter manueller Schritt. Kontostände (`kasse.tsx`) werden
+    client-seitig aus den `transaction`-Zeilen aufsummiert, nicht über
+    eine DB-View: eine View würde (wie die security-definer Helper)
+    automatisch RLS auf `transaction` umgehen und wäre für jeden
+    Authenticated-User lesbar – das ist bei einer Hilfsfunktion für
+    interne Policy-Checks gewollt, bei einer direkt abfragbaren View
+    aber ein Datenleck (jedes Mitglied könnte alle Kontostände aller
+    Clubs sehen). Deshalb bewusst kein `create view` hier.
   - Client: `@supabase/supabase-js`, mit
     `@react-native-async-storage/async-storage` als Storage-Adapter für
     Session-Persistenz in RN (Setup in `kegelclub-app/src/lib/supabase.ts`).
@@ -151,6 +164,24 @@ Liegen in `supabase/migrations/`, chronologisch:
    (`attendance_write_own`, über die neue Hilfsfunktion
    `auth_member_ids()` – analog zu `auth_club_ids()`, um RLS-Rekursion
    auf `member` zu vermeiden, siehe oben).
+8. **`game_and_score`** – legt `game` (ein Spiel pro Kegelabend, Typ
+   `punktekegeln`/`bundeskegeln`) und `score` (Kegel-Ergebnis pro
+   Mitglied und Spiel, unique auf `(game_id, member_id)`) an. Sichtbar
+   für alle Mitglieder desselben Clubs; schreibbar nur für Admin/
+   Kassierer über die neue Hilfsfunktion `auth_staff_club_ids()`
+   (admin **oder** kassierer, analog zu `auth_admin_club_ids()`).
+9. **`kegelkasse`** – legt `transaction` an (Kassenbuch: `einzahlung`/
+   `ausgabe`/`strafe`/`gutschrift`, `amount_cents`, optional `event_id`/
+   `game_id`) sowie die Spalte `club.kegelgeld_cents` (Default 200 =
+   2,00 €). Jedes Mitglied sieht nur seine eigenen Buchungen
+   (`transaction_select_own`, über `auth_member_ids()`), Admin/
+   Kassierer sehen alle Buchungen ihres Clubs
+   (`transaction_select_staff`); Schreiben nur für Admin/Kassierer.
+   Fügt die security-definer RPC `record_game_scores(p_event_id,
+   p_type, p_scores)` hinzu: legt ein `game` an, speichert die
+   übergebenen Scores und bucht pro Mitglied mit Score automatisch
+   das Kegelgeld als `'einzahlung'` (idempotent über einen partiellen
+   Unique-Index auf `(game_id, member_id) WHERE game_id IS NOT NULL`).
 
 ## Kern-Datenmodell (Ausgangspunkt, teils noch nicht als Migration umgesetzt)
 
@@ -164,10 +195,21 @@ Liegen in `supabase/migrations/`, chronologisch:
   da"-Anwesenheitserfassung (Check-in am Kegelabend selbst, unabhängig
   von der Zusage) ist bewusst noch nicht Teil dieser Tabelle — noch
   offen, siehe unten.
-- `game`/`session` – ein gespieltes Spiel pro Event — noch offen
-- `score`/`throw` – Ergebnis-/Wurferfassung — noch offen
-- `penalty_rule` / `penalty` – frei konfigurierbare Strafregeln — noch offen
-- `transaction` – Kassenbuch — noch offen
+- `game` – ein gespieltes Spiel pro Event (id, club_id, event_id,
+  type) ✅ umgesetzt. Aktuell **ein** generischer Spieltyp mit
+  einfachem Kegel-Gesamtergebnis pro Mitglied, keine konfigurierbare
+  Regel-Engine (bewusst, siehe "Offene Punkte").
+- `score` – Ergebnis pro Mitglied und Spiel (id, club_id, game_id,
+  member_id, pins) ✅ umgesetzt.
+- `penalty_rule` / `penalty` – frei konfigurierbare Strafregeln — noch
+  offen (siehe "Offene Punkte": Einchecken/Verspätungsstrafe). Manuelle
+  Ad-hoc-Buchungen laufen vorerst direkt über `transaction`.
+- `transaction` – Kassenbuch (id, club_id, member_id, event_id, game_id,
+  type, amount_cents, note) ✅ umgesetzt. Automatische Buchung von
+  Kegelgeld über `record_game_scores`; manuelle Buchungen (Bareinzahlung,
+  Ausgabe, Ad-hoc-Strafe) sind über die `transaction_write_staff`-Policy
+  möglich, aber noch ohne eigenen Screen (bisher nur die automatische
+  Kegelgeld-Buchung hat eine UI).
 - `fee`/`invoice` – Beiträge/Rechnungen inkl. SEPA-Status — noch offen
 - `team` / `team_member` – Mannschaften — noch offen
 - `announcement` – Ankündigungen — noch offen
@@ -198,6 +240,18 @@ Statistiken/Ranglisten werden als Postgres Views bzw. Funktionen über
   (`event`, `type: 'kegelabend'`) für den eigenen Club an; Datum/
   Uhrzeit aktuell als zwei Text-Felder (`JJJJ-MM-TT` / `HH:MM`), kein
   Date-Picker-Package eingebunden.
+- `kegelclub-app/src/app/enter-score.tsx` – Admin/Kassierer wählen
+  einen Spieltyp und tragen pro Mitglied des Clubs die Kegelzahl ein
+  (leere Felder werden nicht mitgeschickt); ruft die RPC
+  `record_game_scores` auf (Event-ID kommt als Router-Param von
+  `events.tsx`). Legt bei jedem Speichern ein **neues** `game` an –
+  bestehende Ergebnisse eines Events lassen sich damit noch nicht
+  nachträglich bearbeiten, nur ergänzen.
+- `kegelclub-app/src/app/kasse.tsx` – Admin/Kassierer sehen die
+  Kontostände aller Mitglieder (aus `transaction` client-seitig
+  aufsummiert), reguläre Mitglieder sehen nur ihren eigenen
+  Kontostand + eigene Buchungshistorie (RLS-Trennung, siehe
+  `transaction_select_own`/`_staff`).
 - `kegelclub-app/src/lib/member.ts` – `getCurrentMember()`: liest die
   `member`-Zeile des eingeloggten Users (id, club_id, role,
   display_name). Nimmt aktuell die erste gefundene Zeile – Mitglieder
@@ -207,9 +261,11 @@ Statistiken/Ranglisten werden als Postgres Views bzw. Funktionen über
   (Home/Explore), unverändert bis auf den Umzug in die `(tabs)`-Gruppe.
 
 Damit sind die Pfade Auth → Club anlegen → RLS-geschütztes Schreiben,
-Auth → Club per Einladungscode beitreten sowie Kegelabend anlegen →
-Zu-/Absage je einmal end-to-end verdrahtet und im Browser mit
-mehreren Test-Accounts gegen die lokale Supabase-Instanz getestet.
+Auth → Club per Einladungscode beitreten, Kegelabend anlegen →
+Zu-/Absage sowie Ergebnisse erfassen → automatische Kegelgeld-Buchung
+je einmal end-to-end verdrahtet und im Browser mit mehreren
+Test-Accounts (inkl. RLS-Sichtbarkeitsprüfung zwischen Admin und
+regulärem Mitglied) gegen die lokale Supabase-Instanz getestet.
 
 ## DSGVO-Hinweise (gilt für die gesamte Entwicklung)
 
@@ -231,9 +287,10 @@ mehreren Test-Accounts gegen die lokale Supabase-Instanz getestet.
    versioniert, RLS von Anfang an, Expo-Projekt mit Supabase-Client
    verbunden, erster vertikaler Durchstich (Auth + Club anlegen) steht.
 2. **Phase 1 – MVP:** ✅ Einladungscode-Beitritt für weitere Mitglieder,
-   ✅ Kegelabend anlegen + Zu-/Absage. Noch offen: einfache
-   Session-Erfassung (1–2 Spieltypen) + automatische Kegelkasse mit
-   Salden.
+   ✅ Kegelabend anlegen + Zu-/Absage, ✅ Ergebniserfassung (2
+   Spieltypen: Punktekegeln/Bundeskegeln) + automatische Kegelkasse
+   (Kegelgeld pro Teilnahme, Kontostände nach Rolle getrennt sichtbar).
+   Damit ist der MVP-Umfang aus dem ursprünglichen Plan erreicht.
 3. **Phase 2 – Ausbau:** weitere Spieltypen + konfigurierbare
    Strafregeln, Statistiken/Ranglisten, Terminplanung mit Push
    (inkl. Regeltermine/Serien, siehe "Offene Punkte"),
@@ -281,6 +338,14 @@ mehreren Test-Accounts gegen die lokale Supabase-Instanz getestet.
   `penalty`-Tabellen (z.B. 0,10 €/Minute nach `event.starts_at`), die
   dann als `transaction` in die Kegelkasse einfließt. Gehört fachlich
   zu Phase 1/2 (Kegelkasse) bzw. Phase 3 (Strafregeln), siehe Roadmap.
+- **Ergebnisse nachträglich bearbeiten:** `record_game_scores` legt bei
+  jedem Aufruf ein neues `game` an; es gibt noch keine Möglichkeit,
+  ein bereits erfasstes Ergebnis zu korrigieren oder ein `game` zu
+  löschen (inkl. der zugehörigen automatischen Kegelgeld-Buchung).
+- **Manuelle Kegelkasse-Buchungen:** `transaction_write_staff`
+  erlaubt Admin/Kassierer bereits beliebige Buchungen (Bareinzahlung,
+  Ausgabe, Ad-hoc-Strafe), aber `kasse.tsx` hat noch kein Formular
+  dafür – bisher nur Lesen + die automatische Kegelgeld-Buchung.
 - Konkrete Spielregeln/Strafregeln-Konfiguration (wie flexibel muss die
   Regel-Engine sein?)
 - SEPA-Lastschrift-Anbindung im Detail (Gläubiger-ID, Mandatsverwaltung)

@@ -19,11 +19,24 @@ type EventRow = {
 
 type AttendanceStatus = 'offen' | 'zugesagt' | 'abgesagt';
 
+type GameResult = {
+  gameId: string;
+  type: string;
+  scores: { memberId: string; pins: number }[];
+};
+
+const GAME_TYPE_LABELS: Record<string, string> = {
+  punktekegeln: 'Punktekegeln',
+  bundeskegeln: 'Bundeskegeln',
+};
+
 export default function EventsScreen() {
   const theme = useTheme();
   const [member, setMember] = useState<CurrentMember | null>(null);
   const [events, setEvents] = useState<EventRow[]>([]);
   const [attendance, setAttendance] = useState<Record<string, AttendanceStatus>>({});
+  const [results, setResults] = useState<Record<string, GameResult[]>>({});
+  const [memberNames, setMemberNames] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -62,13 +75,43 @@ export default function EventsScreen() {
       return;
     }
 
-    const map: Record<string, AttendanceStatus> = {};
+    const attendanceMap: Record<string, AttendanceStatus> = {};
     for (const row of attendanceRows ?? []) {
-      map[row.event_id] = row.status as AttendanceStatus;
+      attendanceMap[row.event_id] = row.status as AttendanceStatus;
+    }
+
+    const eventIds = (eventRows ?? []).map((event) => event.id);
+
+    const [{ data: memberRows }, { data: gameRows }] = await Promise.all([
+      supabase.from('member').select('id, display_name').eq('club_id', currentMember.club_id),
+      eventIds.length > 0
+        ? supabase.from('game').select('id, event_id, type').in('event_id', eventIds)
+        : Promise.resolve({ data: [] as { id: string; event_id: string; type: string }[] }),
+    ]);
+
+    const nameMap: Record<string, string> = {};
+    for (const row of memberRows ?? []) {
+      nameMap[row.id] = row.display_name;
+    }
+
+    const gameIds = (gameRows ?? []).map((game) => game.id);
+    const { data: scoreRows } =
+      gameIds.length > 0
+        ? await supabase.from('score').select('game_id, member_id, pins').in('game_id', gameIds)
+        : { data: [] as { game_id: string; member_id: string; pins: number }[] };
+
+    const resultMap: Record<string, GameResult[]> = {};
+    for (const game of gameRows ?? []) {
+      const scores = (scoreRows ?? [])
+        .filter((score) => score.game_id === game.id)
+        .map((score) => ({ memberId: score.member_id, pins: score.pins }));
+      resultMap[game.event_id] = [...(resultMap[game.event_id] ?? []), { gameId: game.id, type: game.type, scores }];
     }
 
     setEvents(eventRows ?? []);
-    setAttendance(map);
+    setAttendance(attendanceMap);
+    setResults(resultMap);
+    setMemberNames(nameMap);
     setLoading(false);
   }, []);
 
@@ -113,6 +156,10 @@ export default function EventsScreen() {
 
           {error && <ThemedText style={styles.error}>{error}</ThemedText>}
 
+          <Pressable onPress={() => router.push('/kasse')}>
+            <ThemedText type="link">Kegelkasse</ThemedText>
+          </Pressable>
+
           {member && (member.role === 'admin' || member.role === 'kassierer') && (
             <Pressable onPress={() => router.push('/create-event')}>
               <ThemedText type="link">+ Kegelabend anlegen</ThemedText>
@@ -151,6 +198,28 @@ export default function EventsScreen() {
                     <ThemedText type="small">Absagen</ThemedText>
                   </Pressable>
                 </ThemedView>
+
+                {(results[event.id] ?? []).map((game) => (
+                  <ThemedView key={game.gameId} style={styles.resultsBlock}>
+                    <ThemedText type="small" themeColor="textSecondary">
+                      Ergebnisse ({GAME_TYPE_LABELS[game.type] ?? game.type}):
+                    </ThemedText>
+                    {game.scores.map((score) => (
+                      <ThemedText key={score.memberId} type="small">
+                        {memberNames[score.memberId] ?? '?'}: {score.pins}
+                      </ThemedText>
+                    ))}
+                  </ThemedView>
+                ))}
+
+                {member && (member.role === 'admin' || member.role === 'kassierer') && (
+                  <Pressable
+                    onPress={() =>
+                      router.push({ pathname: '/enter-score', params: { eventId: event.id } })
+                    }>
+                    <ThemedText type="link">Ergebnisse erfassen</ThemedText>
+                  </Pressable>
+                )}
               </ThemedView>
             );
           })}
@@ -198,6 +267,9 @@ const styles = StyleSheet.create({
     borderRadius: Spacing.three,
     padding: Spacing.three,
     gap: Spacing.two,
+  },
+  resultsBlock: {
+    gap: Spacing.half,
   },
   rsvpRow: {
     flexDirection: 'row',
