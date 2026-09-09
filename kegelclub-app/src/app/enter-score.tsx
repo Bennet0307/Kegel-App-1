@@ -10,11 +10,12 @@ import { useTheme } from '@/hooks/use-theme';
 import { getCurrentMember } from '@/lib/member';
 import { supabase } from '@/lib/supabase';
 
-type GameType = 'kleine_hausnummer' | 'grosse_hausnummer';
+type GameType = 'kleine_hausnummer' | 'grosse_hausnummer' | 'freitext';
 
 const GAME_TYPES: { value: GameType; label: string }[] = [
   { value: 'kleine_hausnummer', label: 'Kleine Hausnummer' },
   { value: 'grosse_hausnummer', label: 'Große Hausnummer' },
+  { value: 'freitext', label: 'Freitext' },
 ];
 
 type Digits = { h: string; t: string; e: string };
@@ -40,9 +41,13 @@ export default function EnterScoreScreen() {
   const [penaltyMode, setPenaltyMode] = useState<PenaltyMode>('fest');
   const [step, setStep] = useState('');
   const [stepDefaults, setStepDefaults] = useState<{ fest: string; prozent: string }>({ fest: '', prozent: '' });
+  const [description, setDescription] = useState('');
+  const [penaltyByMember, setPenaltyByMember] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const isFreitext = gameType === 'freitext';
 
   useEffect(() => {
     (async () => {
@@ -91,7 +96,7 @@ export default function EnterScoreScreen() {
         const [{ data: gameRow }, { data: scoreRows }] = await Promise.all([
           supabase
             .from('game')
-            .select('type, penalty_max_cents, penalty_mode, penalty_step_cents, penalty_step_percent')
+            .select('type, description, penalty_max_cents, penalty_mode, penalty_step_cents, penalty_step_percent')
             .eq('id', gameId)
             .single(),
           supabase.from('score').select('member_id, pins').eq('game_id', gameId),
@@ -99,7 +104,10 @@ export default function EnterScoreScreen() {
 
         if (gameRow) {
           setGameType(gameRow.type as GameType);
-          if (gameRow.penalty_max_cents != null && gameRow.penalty_mode) {
+
+          if (gameRow.type === 'freitext') {
+            setDescription(gameRow.description ?? '');
+          } else if (gameRow.penalty_max_cents != null && gameRow.penalty_mode) {
             setMaxEuro(centsToEuroString(gameRow.penalty_max_cents));
             setPenaltyMode(gameRow.penalty_mode as PenaltyMode);
             setStep(
@@ -110,12 +118,20 @@ export default function EnterScoreScreen() {
           }
         }
 
-        const digits: Record<string, Digits> = {};
-        for (const row of scoreRows ?? []) {
-          const padded = String(row.pins).padStart(3, '0');
-          digits[row.member_id] = { h: padded[0], t: padded[1], e: padded[2] };
+        if (gameRow?.type === 'freitext') {
+          const penalties: Record<string, string> = {};
+          for (const row of scoreRows ?? []) {
+            penalties[row.member_id] = centsToEuroString(row.pins);
+          }
+          setPenaltyByMember(penalties);
+        } else {
+          const digits: Record<string, Digits> = {};
+          for (const row of scoreRows ?? []) {
+            const padded = String(row.pins).padStart(3, '0');
+            digits[row.member_id] = { h: padded[0], t: padded[1], e: padded[2] };
+          }
+          setDigitsByMember(digits);
         }
-        setDigitsByMember(digits);
       }
 
       setLoading(false);
@@ -133,6 +149,51 @@ export default function EnterScoreScreen() {
   async function handleSave() {
     if (!isEditing && !eventId) {
       setError('Kein Kegelabend ausgewählt.');
+      return;
+    }
+
+    if (isFreitext) {
+      const penalties: { member_id: string; amount_cents: number }[] = [];
+      for (const memberRow of members) {
+        const value = penaltyByMember[memberRow.id];
+        if (value === undefined || value.trim() === '') continue;
+
+        const cents = euroStringToCents(value);
+        if (Number.isNaN(cents) || cents < 0) {
+          setError(`Bitte bei ${memberRow.display_name} einen gültigen Betrag angeben.`);
+          return;
+        }
+        penalties.push({ member_id: memberRow.id, amount_cents: cents });
+      }
+
+      if (penalties.length === 0) {
+        setError('Bitte mindestens ein Mitglied eintragen (0 = teilgenommen, keine Strafe).');
+        return;
+      }
+
+      setSaving(true);
+      setError(null);
+
+      const { error: rpcError } = isEditing
+        ? await supabase.rpc('update_freitext_game', {
+            p_game_id: gameId,
+            p_description: description,
+            p_penalties: penalties,
+          })
+        : await supabase.rpc('record_freitext_game', {
+            p_event_id: eventId,
+            p_description: description,
+            p_penalties: penalties,
+          });
+
+      setSaving(false);
+
+      if (rpcError) {
+        setError(rpcError.message);
+        return;
+      }
+
+      router.replace('/events');
       return;
     }
 
@@ -233,81 +294,118 @@ export default function EnterScoreScreen() {
             ))}
           </ThemedView>
 
-          <ThemedText type="small" themeColor="textSecondary">
-            Hunderter / Zehner / Einer je Mitglied (0–9, leer = hat nicht gespielt)
-          </ThemedText>
+          {isFreitext ? (
+            <>
+              <ThemedText type="small" themeColor="textSecondary">
+                Beschreibung des Spiels
+              </ThemedText>
+              <TextInput
+                value={description}
+                onChangeText={setDescription}
+                placeholder="z.B. Kniffel-Runde"
+                placeholderTextColor={theme.textSecondary}
+                style={[styles.input, { color: theme.text, backgroundColor: theme.backgroundElement }]}
+              />
 
-          {members.map((memberRow) => {
-            const digits = digitsByMember[memberRow.id] ?? { h: '', t: '', e: '' };
-            return (
-              <ThemedView key={memberRow.id} style={styles.memberRow}>
-                <ThemedText style={styles.memberName}>{memberRow.display_name}</ThemedText>
-                <ThemedView style={styles.digitRow}>
-                  {(['h', 't', 'e'] as const).map((key) => (
-                    <TextInput
-                      key={key}
-                      value={digits[key]}
-                      onChangeText={(value) => setDigit(memberRow.id, key, value)}
-                      keyboardType="number-pad"
-                      maxLength={1}
-                      style={[styles.digitInput, { color: theme.text, backgroundColor: theme.backgroundElement }]}
-                    />
-                  ))}
+              <ThemedText type="small" themeColor="textSecondary">
+                Strafe je Mitglied (€, leer = hat nicht teilgenommen, 0 = teilgenommen ohne Strafe)
+              </ThemedText>
+
+              {members.map((memberRow) => (
+                <ThemedView key={memberRow.id} style={styles.memberRow}>
+                  <ThemedText style={styles.memberName}>{memberRow.display_name}</ThemedText>
+                  <TextInput
+                    value={penaltyByMember[memberRow.id] ?? ''}
+                    onChangeText={(value) =>
+                      setPenaltyByMember((prev) => ({ ...prev, [memberRow.id]: value }))
+                    }
+                    placeholder="0.00"
+                    placeholderTextColor={theme.textSecondary}
+                    keyboardType="decimal-pad"
+                    style={[styles.freitextInput, { color: theme.text, backgroundColor: theme.backgroundElement }]}
+                  />
+                </ThemedView>
+              ))}
+            </>
+          ) : (
+            <>
+              <ThemedText type="small" themeColor="textSecondary">
+                Hunderter / Zehner / Einer je Mitglied (0–9, leer = hat nicht gespielt)
+              </ThemedText>
+
+              {members.map((memberRow) => {
+                const digits = digitsByMember[memberRow.id] ?? { h: '', t: '', e: '' };
+                return (
+                  <ThemedView key={memberRow.id} style={styles.memberRow}>
+                    <ThemedText style={styles.memberName}>{memberRow.display_name}</ThemedText>
+                    <ThemedView style={styles.digitRow}>
+                      {(['h', 't', 'e'] as const).map((key) => (
+                        <TextInput
+                          key={key}
+                          value={digits[key]}
+                          onChangeText={(value) => setDigit(memberRow.id, key, value)}
+                          keyboardType="number-pad"
+                          maxLength={1}
+                          style={[styles.digitInput, { color: theme.text, backgroundColor: theme.backgroundElement }]}
+                        />
+                      ))}
+                    </ThemedView>
+                  </ThemedView>
+                );
+              })}
+
+              <ThemedText type="small" themeColor="textSecondary">
+                Strafe: Verlierer zahlt den Maximalbetrag, jeder bessere Rang zahlt weniger
+              </ThemedText>
+
+              <ThemedView style={styles.penaltyRow}>
+                <ThemedView style={styles.penaltyField}>
+                  <ThemedText type="small" themeColor="textSecondary">
+                    Maximalbetrag (€)
+                  </ThemedText>
+                  <TextInput
+                    value={maxEuro}
+                    onChangeText={setMaxEuro}
+                    placeholder="0.50"
+                    placeholderTextColor={theme.textSecondary}
+                    keyboardType="decimal-pad"
+                    style={[styles.input, { color: theme.text, backgroundColor: theme.backgroundElement }]}
+                  />
+                </ThemedView>
+
+                <ThemedView style={styles.penaltyField}>
+                  <ThemedText type="small" themeColor="textSecondary">
+                    Reduzierung pro Rang ({penaltyMode === 'prozent' ? '%' : '€'})
+                  </ThemedText>
+                  <TextInput
+                    value={step}
+                    onChangeText={setStep}
+                    placeholder={penaltyMode === 'prozent' ? '20' : '0.10'}
+                    placeholderTextColor={theme.textSecondary}
+                    keyboardType="decimal-pad"
+                    style={[styles.input, { color: theme.text, backgroundColor: theme.backgroundElement }]}
+                  />
                 </ThemedView>
               </ThemedView>
-            );
-          })}
 
-          <ThemedText type="small" themeColor="textSecondary">
-            Strafe: Verlierer zahlt den Maximalbetrag, jeder bessere Rang zahlt weniger
-          </ThemedText>
-
-          <ThemedView style={styles.penaltyRow}>
-            <ThemedView style={styles.penaltyField}>
-              <ThemedText type="small" themeColor="textSecondary">
-                Maximalbetrag (€)
-              </ThemedText>
-              <TextInput
-                value={maxEuro}
-                onChangeText={setMaxEuro}
-                placeholder="0.50"
-                placeholderTextColor={theme.textSecondary}
-                keyboardType="decimal-pad"
-                style={[styles.input, { color: theme.text, backgroundColor: theme.backgroundElement }]}
-              />
-            </ThemedView>
-
-            <ThemedView style={styles.penaltyField}>
-              <ThemedText type="small" themeColor="textSecondary">
-                Reduzierung pro Rang ({penaltyMode === 'prozent' ? '%' : '€'})
-              </ThemedText>
-              <TextInput
-                value={step}
-                onChangeText={setStep}
-                placeholder={penaltyMode === 'prozent' ? '20' : '0.10'}
-                placeholderTextColor={theme.textSecondary}
-                keyboardType="decimal-pad"
-                style={[styles.input, { color: theme.text, backgroundColor: theme.backgroundElement }]}
-              />
-            </ThemedView>
-          </ThemedView>
-
-          <ThemedView style={styles.typeRow}>
-            {(['fest', 'prozent'] as const).map((mode) => (
-              <Pressable
-                key={mode}
-                style={[
-                  styles.typeButton,
-                  { backgroundColor: penaltyMode === mode ? theme.backgroundSelected : theme.backgroundElement },
-                ]}
-                onPress={() => {
-                  setPenaltyMode(mode);
-                  setStep(stepDefaults[mode]);
-                }}>
-                <ThemedText type="small">{mode === 'fest' ? 'Fester Betrag' : 'Prozentual'}</ThemedText>
-              </Pressable>
-            ))}
-          </ThemedView>
+              <ThemedView style={styles.typeRow}>
+                {(['fest', 'prozent'] as const).map((mode) => (
+                  <Pressable
+                    key={mode}
+                    style={[
+                      styles.typeButton,
+                      { backgroundColor: penaltyMode === mode ? theme.backgroundSelected : theme.backgroundElement },
+                    ]}
+                    onPress={() => {
+                      setPenaltyMode(mode);
+                      setStep(stepDefaults[mode]);
+                    }}>
+                    <ThemedText type="small">{mode === 'fest' ? 'Fester Betrag' : 'Prozentual'}</ThemedText>
+                  </Pressable>
+                ))}
+              </ThemedView>
+            </>
+          )}
 
           {error && <ThemedText style={styles.error}>{error}</ThemedText>}
 
@@ -376,6 +474,14 @@ const styles = StyleSheet.create({
     borderRadius: Spacing.two,
     fontSize: 16,
     textAlign: 'center',
+  },
+  freitextInput: {
+    width: 90,
+    height: 44,
+    borderRadius: Spacing.two,
+    paddingHorizontal: Spacing.two,
+    fontSize: 16,
+    textAlign: 'right',
   },
   input: {
     height: 48,

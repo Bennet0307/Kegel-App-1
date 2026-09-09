@@ -291,6 +291,18 @@ Liegen in `supabase/migrations/`, chronologisch:
     existiert, verschwindet die Kegelgeld-Buchung mit – wird nicht
     automatisch auf das verbleibende Spiel "umgehängt". Noch offen,
     siehe "Offene Punkte".
+16. **`freitext_game`** – dritter Spieltyp `'freitext'`: kein Ranking/
+    keine Formel, sondern ein freier Beschreibungstext fürs Spiel
+    (`game.description`) plus frei eingegebene Strafe pro Mitglied
+    (auch 0 € = teilgenommen, keine Strafe). `score.pins` wird für
+    diesen Typ als Strafe in Cent zweckentfremdet (statt Hausnummer-
+    Ziffern) – vermeidet eine weitere Tabelle nur für diesen simplen
+    Fall. Neue Hilfsfunktion `book_freitext_game()` (analog zu
+    `book_game_scores()`, aber ohne Rang-Logik) sowie die RPCs
+    `record_freitext_game(p_event_id, p_description, p_penalties)` /
+    `update_freitext_game(p_game_id, p_description, p_penalties)`.
+    Kegelgeld wird genauso automatisch gebucht wie bei den Hausnummer-
+    Spielen (über dieselbe `event_id`-Eindeutigkeit aus Migration 15).
 
 ## Kern-Datenmodell (Ausgangspunkt, teils noch nicht als Migration umgesetzt)
 
@@ -305,11 +317,13 @@ Liegen in `supabase/migrations/`, chronologisch:
   von der Zusage) ist bewusst noch nicht Teil dieser Tabelle — noch
   offen, siehe unten.
 - `game` – ein gespieltes Spiel pro Event (id, club_id, event_id, type,
-  penalty_max_cents, penalty_mode, penalty_step_cents,
-  penalty_step_percent) ✅ umgesetzt. Genau zwei Spieltypen:
-  `kleine_hausnummer`/`grosse_hausnummer` (3 Würfe zu einer 3-stelligen
-  Zahl, Sieger = größte bzw. kleinste Zahl). Weitere Spieltypen mit
-  eigener Regel-Engine sind bewusst noch nicht gebaut (siehe "Offene
+  description, penalty_max_cents, penalty_mode, penalty_step_cents,
+  penalty_step_percent) ✅ umgesetzt. Drei Spieltypen: `kleine_hausnummer`/
+  `grosse_hausnummer` (3 Würfe zu einer 3-stelligen Zahl, Sieger = größte
+  bzw. kleinste Zahl, Rang-abhängige Strafformel) und `freitext`
+  (`description` = freier Spielname/-beschreibung, keine Formel – Strafe
+  pro Mitglied wird direkt eingegeben). Weitere strukturierte Spieltypen
+  mit eigener Regel-Engine sind bewusst noch nicht gebaut (siehe "Offene
   Punkte").
 - `score` – Ergebnis pro Mitglied und Spiel (id, club_id, game_id,
   member_id, pins) ✅ umgesetzt. Bei den Hausnummer-Spielen steht hier
@@ -363,7 +377,9 @@ Statistiken/Ranglisten werden als Postgres Views bzw. Funktionen über
   `attendance`, `onConflict: 'event_id,member_id'`). Admins/Kassierer
   sehen zusätzlich einen Link zu `/create-event`. Erfasste Ergebnisse
   werden pro `game` angezeigt; bei den Hausnummer-Typen mit
-  führenden Nullen auf 3 Stellen formatiert (`formatScore()`).
+  führenden Nullen auf 3 Stellen, bei `freitext` als Euro-Betrag
+  formatiert (`formatScore()`); bei `freitext` steht zusätzlich die
+  `game.description` in der Kopfzeile des Ergebnisblocks.
   Admins/Kassierer sehen pro `game` zusätzlich "Bearbeiten" (→
   `/enter-score` mit `gameId`-Param) und "Löschen" (zwei Taps als
   Bestätigung – lokaler `confirmingGameId`-State statt `Alert`/Modal,
@@ -388,7 +404,13 @@ Statistiken/Ranglisten werden als Postgres Views bzw. Funktionen über
   `gameId` → anlegen, ruft `record_game_scores` (Event-ID kommt als
   Router-Param von `events.tsx`); mit `gameId` → bearbeiten, lädt
   zuerst Typ/Scores/Strafformel-Snapshot des bestehenden `game` zum
-  Vorausfüllen und ruft `update_game_scores`.
+  Vorausfüllen und ruft `update_game_scores`. Dritte Spieltyp-Option
+  "Freitext" schaltet auf ein komplett anderes Eingabe-Layout um
+  (`isFreitext`-Zweig): ein Textfeld für die Spielbeschreibung statt
+  Hunderter/Zehner/Einer, und pro Mitglied ein einzelnes Euro-Feld für
+  die Strafe statt der Formel-Felder (leer = nicht teilgenommen, 0 =
+  teilgenommen ohne Strafe) – ruft `record_freitext_game`/
+  `update_freitext_game` statt `record_game_scores`/`update_game_scores`.
 - `kegelclub-app/src/app/kasse.tsx` – Admin/Kassierer sehen den
   Gesamtbetrag aller Mitglieder (aus `transaction` client-seitig
   aufsummiert, `einzahlung`/`kegelgeld`/`strafe` positiv), reguläre

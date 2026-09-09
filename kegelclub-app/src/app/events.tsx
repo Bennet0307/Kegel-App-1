@@ -22,18 +22,26 @@ type AttendanceStatus = 'offen' | 'zugesagt' | 'abgesagt';
 type GameResult = {
   gameId: string;
   type: string;
+  description: string | null;
   scores: { memberId: string; pins: number }[];
 };
 
 const GAME_TYPE_LABELS: Record<string, string> = {
   kleine_hausnummer: 'Kleine Hausnummer',
   grosse_hausnummer: 'Große Hausnummer',
+  freitext: 'Freitext',
 };
 
 const HAUSNUMMER_TYPES = new Set(['kleine_hausnummer', 'grosse_hausnummer']);
 
+function formatEuro(cents: number) {
+  return (cents / 100).toLocaleString('de-DE', { style: 'currency', currency: 'EUR' });
+}
+
 function formatScore(type: string, pins: number) {
-  return HAUSNUMMER_TYPES.has(type) ? String(pins).padStart(3, '0') : String(pins);
+  if (HAUSNUMMER_TYPES.has(type)) return String(pins).padStart(3, '0');
+  if (type === 'freitext') return formatEuro(pins);
+  return String(pins);
 }
 
 export default function EventsScreen() {
@@ -94,8 +102,10 @@ export default function EventsScreen() {
     const [{ data: memberRows }, { data: gameRows }] = await Promise.all([
       supabase.from('member').select('id, display_name').eq('club_id', currentMember.club_id),
       eventIds.length > 0
-        ? supabase.from('game').select('id, event_id, type').in('event_id', eventIds)
-        : Promise.resolve({ data: [] as { id: string; event_id: string; type: string }[] }),
+        ? supabase.from('game').select('id, event_id, type, description').in('event_id', eventIds)
+        : Promise.resolve({
+            data: [] as { id: string; event_id: string; type: string; description: string | null }[],
+          }),
     ]);
 
     const nameMap: Record<string, string> = {};
@@ -114,7 +124,10 @@ export default function EventsScreen() {
       const scores = (scoreRows ?? [])
         .filter((score) => score.game_id === game.id)
         .map((score) => ({ memberId: score.member_id, pins: score.pins }));
-      resultMap[game.event_id] = [...(resultMap[game.event_id] ?? []), { gameId: game.id, type: game.type, scores }];
+      resultMap[game.event_id] = [
+        ...(resultMap[game.event_id] ?? []),
+        { gameId: game.id, type: game.type, description: game.description, scores },
+      ];
     }
 
     setEvents(eventRows ?? []);
@@ -230,7 +243,8 @@ export default function EventsScreen() {
                 {(results[event.id] ?? []).map((game) => (
                   <ThemedView key={game.gameId} style={styles.resultsBlock}>
                     <ThemedText type="small" themeColor="textSecondary">
-                      Ergebnisse ({GAME_TYPE_LABELS[game.type] ?? game.type}):
+                      Ergebnisse ({GAME_TYPE_LABELS[game.type] ?? game.type}
+                      {game.description ? ` · ${game.description}` : ''}):
                     </ThemedText>
                     {game.scores.map((score) => (
                       <ThemedText key={score.memberId} type="small">
