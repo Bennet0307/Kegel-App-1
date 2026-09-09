@@ -36,7 +36,8 @@ Zielplattformen: **Mobile (iOS/Android) und Web**, eine gemeinsame Codebase.
     `src/app/_layout.tsx` ist ein `Stack` mit der `(tabs)`-Gruppe
     sowie `login`, `create-club`, `join-club`, `events`,
     `create-event`, `enter-score` und `kasse` als eigenen Screens.
-    Nach Login/Signup prüft
+    `enter-score` bedient sowohl Anlegen als auch Bearbeiten (Route-Param
+    `gameId` optional). Nach Login/Signup prüft
     `login.tsx` per `getCurrentMember()` (`lib/member.ts`), ob der
     User schon Mitglied irgendeines Clubs ist, und leitet dann direkt
     zu `/events` weiter statt zu `/create-club`.
@@ -207,6 +208,20 @@ Liegen in `supabase/migrations/`, chronologisch:
     pro Mitglied möglich sind (Kegelgeld **und** Strafe), wurde der
     Idempotenz-Unique-Index von `(game_id, member_id)` auf
     `(game_id, member_id, type)` erweitert.
+11. **`edit_delete_game_scores`** – Ergebnisse nachträglich bearbeiten/
+    löschen. Lagert die eigentliche Buchungslogik (Kegelgeld +
+    Hausnummer-Strafe) aus `record_game_scores` in eine gemeinsame
+    Hilfsfunktion `book_game_scores()` aus, damit der nicht-triviale
+    Rang-Algorithmus nicht doppelt gepflegt werden muss. Neue RPCs:
+    `update_game_scores(p_game_id, p_type, p_scores,
+    p_penalty_schedule_cents)` – löscht alle bisherigen Scores/
+    Buchungen dieses `game` und bucht sie mit den neuen Werten frisch
+    (eine Korrektur kann die Rang-abhängige Strafe für **alle**
+    Mitglieder des Spiels ändern, nicht nur für das bearbeitete);
+    `delete_game(p_game_id)` – löscht ein `game` inkl. aller
+    zugehörigen `transaction`-Zeilen (nötig, weil `transaction.game_id`
+    "on delete set null" ist und sonst verwaiste, aber weiterhin
+    gültige Buchungen zurückbleiben würden).
 
 ## Kern-Datenmodell (Ausgangspunkt, teils noch nicht als Migration umgesetzt)
 
@@ -271,6 +286,10 @@ Statistiken/Ranglisten werden als Postgres Views bzw. Funktionen über
   sehen zusätzlich einen Link zu `/create-event`. Erfasste Ergebnisse
   werden pro `game` angezeigt; bei den Hausnummer-Typen mit
   führenden Nullen auf 3 Stellen formatiert (`formatScore()`).
+  Admins/Kassierer sehen pro `game` zusätzlich "Bearbeiten" (→
+  `/enter-score` mit `gameId`-Param) und "Löschen" (zwei Taps als
+  Bestätigung – lokaler `confirmingGameId`-State statt `Alert`/Modal,
+  ruft die RPC `delete_game`).
 - `kegelclub-app/src/app/create-event.tsx` – legt einen Kegelabend
   (`event`, `type: 'kegelabend'`) für den eigenen Club an; Datum/
   Uhrzeit aktuell als zwei Text-Felder (`JJJJ-MM-TT` / `HH:MM`), kein
@@ -281,12 +300,15 @@ Statistiken/Ranglisten werden als Postgres Views bzw. Funktionen über
   zusammengerechnet werden (leere Mitglieder werden nicht
   mitgeschickt); zusätzlich ein optionales Freitext-Feld, um die
   Strafstaffel für diesen einen Aufruf zu überschreiben (Beträge in
-  €, kommagetrennt, sonst gilt `club.hausnummer_penalty_schedule_cents`
-  – wird zur Orientierung als Hinweistext angezeigt). Ruft die RPC
-  `record_game_scores` auf (Event-ID kommt als Router-Param von
-  `events.tsx`). Legt bei jedem Speichern ein **neues** `game` an –
-  bestehende Ergebnisse eines Events lassen sich damit noch nicht
-  nachträglich bearbeiten, nur ergänzen.
+  €, **mit Punkt als Dezimaltrennzeichen** – Komma trennt hier die
+  Liste, ein deutsches Dezimalkomma würde damit kollidieren; sonst
+  gilt `club.hausnummer_penalty_schedule_cents`, wird zur Orientierung
+  als Hinweistext angezeigt). Bedient zwei Modi über das optionale
+  Router-Param `gameId`: ohne `gameId` → anlegen, ruft
+  `record_game_scores` (Event-ID kommt als Router-Param von
+  `events.tsx`); mit `gameId` → bearbeiten, lädt zuerst Typ/Scores/
+  Strafstaffel des bestehenden `game` zum Vorausfüllen und ruft
+  `update_game_scores`.
 - `kegelclub-app/src/app/kasse.tsx` – Admin/Kassierer sehen die
   Kontostände aller Mitglieder (aus `transaction` client-seitig
   aufsummiert), reguläre Mitglieder sehen nur ihren eigenen
@@ -330,8 +352,9 @@ regulärem Mitglied) gegen die lokale Supabase-Instanz getestet.
    ✅ Kegelabend anlegen + Zu-/Absage, ✅ Ergebniserfassung (2
    Spieltypen: Kleine/Große Hausnummer) + automatische Kegelkasse
    (Kegelgeld pro Teilnahme + nach Platzierung gestaffelte
-   Hausnummer-Strafe, Kontostände nach Rolle getrennt sichtbar).
-   Damit ist der MVP-Umfang aus dem ursprünglichen Plan erreicht.
+   Hausnummer-Strafe, Kontostände nach Rolle getrennt sichtbar),
+   ✅ Ergebnisse nachträglich bearbeiten/löschen. Damit ist der
+   MVP-Umfang aus dem ursprünglichen Plan erreicht.
 3. **Phase 2 – Ausbau:** weitere Spieltypen + konfigurierbare
    Strafregeln, Statistiken/Ranglisten, Terminplanung mit Push
    (inkl. Regeltermine/Serien, siehe "Offene Punkte"),
@@ -410,14 +433,16 @@ regulärem Mitglied) gegen die lokale Supabase-Instanz getestet.
   Ergebnissen des Abends zu erfassen) und einen neuen Screen für die
   Katalog-Verwaltung. Gehört fachlich zu Phase 1/2 (Kegelkasse) bzw.
   Phase 3 (Strafregeln), siehe Roadmap.
-- **Ergebnisse nachträglich bearbeiten:** `record_game_scores` legt bei
-  jedem Aufruf ein neues `game` an; es gibt noch keine Möglichkeit,
-  ein bereits erfasstes Ergebnis zu korrigieren oder ein `game` zu
-  löschen (inkl. der zugehörigen automatischen Kegelgeld-Buchung).
 - **Manuelle Kegelkasse-Buchungen:** `transaction_write_staff`
   erlaubt Admin/Kassierer bereits beliebige Buchungen (Bareinzahlung,
   Ausgabe, Ad-hoc-Strafe), aber `kasse.tsx` hat noch kein Formular
   dafür – bisher nur Lesen + die automatische Kegelgeld-Buchung.
+- **UX-Kleinigkeit in `enter-score.tsx`:** die Hunderter/Zehner/Einer-
+  Felder haben `maxLength={1}`; um eine bereits gefüllte Ziffer zu
+  ändern (z.B. beim Bearbeiten), muss man sie erst leeren
+  (Backspace/markieren), ein neuer Tastendruck überschreibt sie nicht
+  automatisch. Für einzelne Korrekturen unauffällig, könnte man später
+  per Fokus-Select-All-Verhalten komfortabler machen.
 - Konkrete Spielregeln/Strafregeln-Konfiguration für **weitere**
   Spieltypen über Kleine/Große Hausnummer hinaus (wie flexibel muss
   die Regel-Engine sein?) – für die zwei aktuellen Spiele reicht die

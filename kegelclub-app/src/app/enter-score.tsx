@@ -19,22 +19,26 @@ const GAME_TYPES: { value: GameType; label: string }[] = [
 
 type Digits = { h: string; t: string; e: string };
 
+// Bewusst mit Punkt als Dezimaltrennzeichen (nicht toLocaleString('de-DE')):
+// Komma trennt hier die Liste der Beträge, ein deutsches Dezimalkomma würde
+// mit diesem Listentrenner kollidieren und die Staffel falsch zerlegen.
 function formatSchedule(centsList: number[]) {
-  return centsList.map((cents) => (cents / 100).toLocaleString('de-DE', { minimumFractionDigits: 2 })).join(', ');
+  return centsList.map((cents) => (cents / 100).toFixed(2)).join(', ');
 }
 
 function parseSchedule(text: string): number[] | null {
   if (text.trim() === '') return null;
   return text
     .split(',')
-    .map((part) => part.trim().replace(',', '.'))
+    .map((part) => part.trim())
     .filter((part) => part !== '')
     .map((part) => Math.round(Number(part) * 100));
 }
 
 export default function EnterScoreScreen() {
   const theme = useTheme();
-  const { eventId } = useLocalSearchParams<{ eventId: string }>();
+  const { eventId, gameId } = useLocalSearchParams<{ eventId?: string; gameId?: string }>();
+  const isEditing = Boolean(gameId);
 
   const [members, setMembers] = useState<{ id: string; display_name: string }[]>([]);
   const [gameType, setGameType] = useState<GameType>('grosse_hausnummer');
@@ -73,9 +77,31 @@ export default function EnterScoreScreen() {
         setMembers(memberRows ?? []);
       }
       setDefaultSchedule(clubRow?.hausnummer_penalty_schedule_cents ?? []);
+
+      if (gameId) {
+        const [{ data: gameRow }, { data: scoreRows }] = await Promise.all([
+          supabase.from('game').select('type, penalty_schedule_cents').eq('id', gameId).single(),
+          supabase.from('score').select('member_id, pins').eq('game_id', gameId),
+        ]);
+
+        if (gameRow) {
+          setGameType(gameRow.type as GameType);
+          if (gameRow.penalty_schedule_cents?.length) {
+            setScheduleOverride(formatSchedule(gameRow.penalty_schedule_cents));
+          }
+        }
+
+        const digits: Record<string, Digits> = {};
+        for (const row of scoreRows ?? []) {
+          const padded = String(row.pins).padStart(3, '0');
+          digits[row.member_id] = { h: padded[0], t: padded[1], e: padded[2] };
+        }
+        setDigitsByMember(digits);
+      }
+
       setLoading(false);
     })();
-  }, []);
+  }, [gameId]);
 
   function setDigit(memberId: string, key: keyof Digits, value: string) {
     const digit = value.replace(/[^0-9]/g, '').slice(0, 1);
@@ -86,7 +112,7 @@ export default function EnterScoreScreen() {
   }
 
   async function handleSave() {
-    if (!eventId) {
+    if (!isEditing && !eventId) {
       setError('Kein Kegelabend ausgewählt.');
       return;
     }
@@ -121,12 +147,19 @@ export default function EnterScoreScreen() {
     setSaving(true);
     setError(null);
 
-    const { error: rpcError } = await supabase.rpc('record_game_scores', {
-      p_event_id: eventId,
-      p_type: gameType,
-      p_scores: scores,
-      p_penalty_schedule_cents: overrideSchedule,
-    });
+    const { error: rpcError } = isEditing
+      ? await supabase.rpc('update_game_scores', {
+          p_game_id: gameId,
+          p_type: gameType,
+          p_scores: scores,
+          p_penalty_schedule_cents: overrideSchedule,
+        })
+      : await supabase.rpc('record_game_scores', {
+          p_event_id: eventId,
+          p_type: gameType,
+          p_scores: scores,
+          p_penalty_schedule_cents: overrideSchedule,
+        });
 
     setSaving(false);
 
@@ -153,7 +186,7 @@ export default function EnterScoreScreen() {
       <ScrollView contentContainerStyle={styles.scrollContent}>
         <SafeAreaView style={styles.safeArea}>
           <ThemedText type="title" style={styles.title}>
-            Ergebnisse erfassen
+            {isEditing ? 'Ergebnisse bearbeiten' : 'Ergebnisse erfassen'}
           </ThemedText>
 
           <ThemedText type="small" themeColor="textSecondary">
@@ -218,7 +251,7 @@ export default function EnterScoreScreen() {
             <Pressable
               style={[styles.button, { backgroundColor: theme.backgroundElement }]}
               onPress={handleSave}>
-              <ThemedText type="smallBold">Ergebnisse speichern</ThemedText>
+              <ThemedText type="smallBold">{isEditing ? 'Änderungen speichern' : 'Ergebnisse speichern'}</ThemedText>
             </Pressable>
           )}
         </SafeAreaView>

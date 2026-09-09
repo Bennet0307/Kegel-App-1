@@ -45,6 +45,9 @@ export default function EventsScreen() {
   const [memberNames, setMemberNames] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [confirmingGameId, setConfirmingGameId] = useState<string | null>(null);
+
+  const isStaff = member?.role === 'admin' || member?.role === 'kassierer';
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -142,6 +145,19 @@ export default function EventsScreen() {
     }
   }
 
+  async function handleDeleteGame(gameId: string) {
+    setConfirmingGameId(null);
+
+    const { error: deleteError } = await supabase.rpc('delete_game', { p_game_id: gameId });
+
+    if (deleteError) {
+      setError(deleteError.message);
+      return;
+    }
+
+    load();
+  }
+
   if (loading) {
     return (
       <ThemedView style={styles.container}>
@@ -166,7 +182,7 @@ export default function EventsScreen() {
             <ThemedText type="link">Kegelkasse</ThemedText>
           </Pressable>
 
-          {member && (member.role === 'admin' || member.role === 'kassierer') && (
+          {isStaff && (
             <Pressable onPress={() => router.push('/create-event')}>
               <ThemedText type="link">+ Kegelabend anlegen</ThemedText>
             </Pressable>
@@ -215,10 +231,36 @@ export default function EventsScreen() {
                         {memberNames[score.memberId] ?? '?'}: {formatScore(game.type, score.pins)}
                       </ThemedText>
                     ))}
+
+                    {isStaff && (
+                      <ThemedView style={styles.gameActionsRow}>
+                        <Pressable
+                          onPress={() =>
+                            router.push({
+                              pathname: '/enter-score',
+                              params: { eventId: event.id, gameId: game.gameId },
+                            })
+                          }>
+                          <ThemedText type="small" themeColor="textSecondary">
+                            Bearbeiten
+                          </ThemedText>
+                        </Pressable>
+                        <Pressable
+                          onPress={() =>
+                            confirmingGameId === game.gameId
+                              ? handleDeleteGame(game.gameId)
+                              : setConfirmingGameId(game.gameId)
+                          }>
+                          <ThemedText type="small" style={styles.deleteLink}>
+                            {confirmingGameId === game.gameId ? 'Wirklich löschen?' : 'Löschen'}
+                          </ThemedText>
+                        </Pressable>
+                      </ThemedView>
+                    )}
                   </ThemedView>
                 ))}
 
-                {member && (member.role === 'admin' || member.role === 'kassierer') && (
+                {isStaff && (
                   <Pressable
                     onPress={() =>
                       router.push({ pathname: '/enter-score', params: { eventId: event.id } })
@@ -276,6 +318,14 @@ const styles = StyleSheet.create({
   },
   resultsBlock: {
     gap: Spacing.half,
+  },
+  gameActionsRow: {
+    flexDirection: 'row',
+    gap: Spacing.three,
+    marginTop: Spacing.one,
+  },
+  deleteLink: {
+    color: '#d33',
   },
   rsvpRow: {
     flexDirection: 'row',
