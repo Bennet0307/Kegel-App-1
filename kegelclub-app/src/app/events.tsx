@@ -26,6 +26,13 @@ type GameResult = {
   scores: { memberId: string; pins: number }[];
 };
 
+type PenaltyResult = {
+  memberId: string;
+  ruleName: string;
+  unitAmountCents: number;
+  count: number;
+};
+
 const GAME_TYPE_LABELS: Record<string, string> = {
   kleine_hausnummer: 'Kleine Hausnummer',
   grosse_hausnummer: 'Große Hausnummer',
@@ -50,6 +57,7 @@ export default function EventsScreen() {
   const [events, setEvents] = useState<EventRow[]>([]);
   const [attendance, setAttendance] = useState<Record<string, AttendanceStatus>>({});
   const [results, setResults] = useState<Record<string, GameResult[]>>({});
+  const [penalties, setPenalties] = useState<Record<string, PenaltyResult[]>>({});
   const [memberNames, setMemberNames] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -99,12 +107,26 @@ export default function EventsScreen() {
 
     const eventIds = (eventRows ?? []).map((event) => event.id);
 
-    const [{ data: memberRows }, { data: gameRows }] = await Promise.all([
+    const [{ data: memberRows }, { data: gameRows }, { data: penaltyRows }] = await Promise.all([
       supabase.from('member').select('id, display_name').eq('club_id', currentMember.club_id),
       eventIds.length > 0
         ? supabase.from('game').select('id, event_id, type, description').in('event_id', eventIds)
         : Promise.resolve({
             data: [] as { id: string; event_id: string; type: string; description: string | null }[],
+          }),
+      eventIds.length > 0
+        ? supabase
+            .from('penalty')
+            .select('event_id, member_id, rule_name, unit_amount_cents, count')
+            .in('event_id', eventIds)
+        : Promise.resolve({
+            data: [] as {
+              event_id: string;
+              member_id: string;
+              rule_name: string;
+              unit_amount_cents: number;
+              count: number;
+            }[],
           }),
     ]);
 
@@ -130,9 +152,23 @@ export default function EventsScreen() {
       ];
     }
 
+    const penaltyMap: Record<string, PenaltyResult[]> = {};
+    for (const row of penaltyRows ?? []) {
+      penaltyMap[row.event_id] = [
+        ...(penaltyMap[row.event_id] ?? []),
+        {
+          memberId: row.member_id,
+          ruleName: row.rule_name,
+          unitAmountCents: row.unit_amount_cents,
+          count: row.count,
+        },
+      ];
+    }
+
     setEvents(eventRows ?? []);
     setAttendance(attendanceMap);
     setResults(resultMap);
+    setPenalties(penaltyMap);
     setMemberNames(nameMap);
     setLoading(false);
   }, []);
@@ -193,6 +229,10 @@ export default function EventsScreen() {
 
           <Pressable onPress={() => router.push('/kasse')}>
             <ThemedText type="link">Kegelkasse</ThemedText>
+          </Pressable>
+
+          <Pressable onPress={() => router.push('/strafenkatalog')}>
+            <ThemedText type="link">Strafenkatalog</ThemedText>
           </Pressable>
 
           {isStaff && (
@@ -280,12 +320,35 @@ export default function EventsScreen() {
                   </ThemedView>
                 ))}
 
+                {(penalties[event.id] ?? []).length > 0 && (
+                  <ThemedView style={styles.resultsBlock}>
+                    <ThemedText type="small" themeColor="textSecondary">
+                      Strafen:
+                    </ThemedText>
+                    {(penalties[event.id] ?? []).map((penalty, index) => (
+                      <ThemedText key={`${penalty.memberId}-${penalty.ruleName}-${index}`} type="small">
+                        {memberNames[penalty.memberId] ?? '?'}: {penalty.ruleName} ×{penalty.count} (
+                        {formatEuro(penalty.unitAmountCents * penalty.count)})
+                      </ThemedText>
+                    ))}
+                  </ThemedView>
+                )}
+
                 {isStaff && (
                   <Pressable
                     onPress={() =>
                       router.push({ pathname: '/enter-score', params: { eventId: event.id } })
                     }>
                     <ThemedText type="link">Ergebnisse erfassen</ThemedText>
+                  </Pressable>
+                )}
+
+                {isStaff && (
+                  <Pressable
+                    onPress={() =>
+                      router.push({ pathname: '/enter-penalties', params: { eventId: event.id } })
+                    }>
+                    <ThemedText type="link">Strafen erfassen</ThemedText>
                   </Pressable>
                 )}
               </ThemedView>

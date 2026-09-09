@@ -21,6 +21,8 @@ export default function RootLayout() {
         <Stack.Screen name="enter-score" options={{ title: 'Ergebnisse erfassen' }} />
         <Stack.Screen name="kasse" options={{ title: 'Kegelkasse' }} />
         <Stack.Screen name="club-settings" options={{ title: 'Club-Einstellungen' }} />
+        <Stack.Screen name="strafenkatalog" options={{ title: 'Strafenkatalog' }} />
+        <Stack.Screen name="enter-penalties" options={{ title: 'Strafen erfassen' }} />
       </Stack>
     </ThemeProvider>
   );

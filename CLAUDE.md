@@ -35,9 +35,12 @@ Zielplattformen: **Mobile (iOS/Android) und Web**, eine gemeinsame Codebase.
     in der Gruppe `src/app/(tabs)/` (Home, Explore); das Root-Layout
     `src/app/_layout.tsx` ist ein `Stack` mit der `(tabs)`-Gruppe
     sowie `login`, `create-club`, `join-club`, `events`,
-    `create-event`, `enter-score` und `kasse` als eigenen Screens.
+    `create-event`, `enter-score`, `kasse`, `club-settings`,
+    `strafenkatalog` und `enter-penalties` als eigenen Screens.
     `enter-score` bedient sowohl Anlegen als auch Bearbeiten (Route-Param
-    `gameId` optional). Nach Login/Signup prüft
+    `gameId` optional), `enter-penalties` erfasst/korrigiert (ebenfalls
+    per Replace) die Strafenkatalog-Buchungen eines Termins
+    (Route-Param `eventId`). Nach Login/Signup prüft
     `login.tsx` per `getCurrentMember()` (`lib/member.ts`), ob der
     User schon Mitglied irgendeines Clubs ist, und leitet dann direkt
     zu `/events` weiter statt zu `/create-club`.
@@ -303,6 +306,27 @@ Liegen in `supabase/migrations/`, chronologisch:
     `update_freitext_game(p_game_id, p_description, p_penalties)`.
     Kegelgeld wird genauso automatisch gebucht wie bei den Hausnummer-
     Spielen (über dieselbe `event_id`-Eindeutigkeit aus Migration 15).
+17. **`penalty_catalog`** – freier Strafenkatalog pro Club, umsetzt die
+    entsprechende Idee aus "Offene Punkte" (Grundfunktion, ohne die
+    "Pumpenkönig"-Zuschlag-Idee, die weiterhin offen bleibt). Neue
+    Tabelle `penalty_rule` (club_id, name, amount_cents) – freie
+    Strafarten wie "Pumpe"/"Klingen", verwaltet über eine eigene
+    Katalog-Seite. Neue Tabelle `penalty` (club_id, event_id, member_id,
+    penalty_rule_id, rule_name, unit_amount_cents, count) – Erfassung
+    **pro Termin** (nicht pro Spiel): für jedes Mitglied wird gezählt,
+    wie oft welche Strafart an diesem Kegelabend fällig wurde. `rule_name`/
+    `unit_amount_cents` sind ein Snapshot analog zur Hausnummer-
+    Strafformel (Migration 12) – spätere Änderungen/Löschungen im
+    Katalog verändern alte Buchungen nicht (`penalty_rule_id` ist
+    `on delete set null`). Neue Spalte `transaction.penalty_id` (on
+    delete cascade) verknüpft die automatisch erzeugte Kassenbuch-Zeile
+    mit ihrer `penalty`-Buchung. Security-definer RPC
+    `record_event_penalties(p_event_id, p_penalties)` löscht+bucht alle
+    Strafenkatalog-Einträge eines Termins in einem Schritt (idempotent
+    für ErstErfassung und Korrektur, analog zum Replace-Muster aus
+    `update_game_scores`/`update_freitext_game`). Bewusst **kein**
+    Kegelgeld in dieser RPC – das bleibt ausschließlich an die
+    Spiel-Teilnahme gebunden (Migration 15/16).
 
 ## Kern-Datenmodell (Ausgangspunkt, teils noch nicht als Migration umgesetzt)
 
@@ -328,25 +352,33 @@ Liegen in `supabase/migrations/`, chronologisch:
 - `score` – Ergebnis pro Mitglied und Spiel (id, club_id, game_id,
   member_id, pins) ✅ umgesetzt. Bei den Hausnummer-Spielen steht hier
   die fertige 3-stellige Zahl (0–999), nicht die einzelnen Würfe.
-- `penalty_rule` / `penalty` – als eigene, konfigurierbare Tabellen
-  weiterhin — noch offen (siehe "Offene Punkte": Freier Strafenkatalog
-  pro Club). Die Hausnummer-Strafformel (Maximalbetrag + feste/
-  prozentuale Reduzierung pro Rang, `club.hausnummer_penalty_*`, pro
-  Aufruf über `record_game_scores`/`update_game_scores` überschreibbar)
-  deckt den aktuellen Bedarf für die zwei Hausnummer-Spiele bereits ab,
-  ohne eine generische Regel-Engine zu brauchen. Sonstige manuelle
-  Ad-hoc-Buchungen laufen direkt über `transaction`.
+- `penalty_rule` – freier Strafenkatalog pro Club (id, club_id, name,
+  amount_cents) ✅ umgesetzt (Migration 17). Unabhängig von der
+  Hausnummer-Strafformel (Maximalbetrag + feste/prozentuale Reduzierung
+  pro Rang, `club.hausnummer_penalty_*`, pro Aufruf über
+  `record_game_scores`/`update_game_scores` überschreibbar), die weiterhin
+  nur die zwei Hausnummer-Spiele bedient.
+- `penalty` – Strafenkatalog-Buchung pro Termin und Mitglied (id,
+  club_id, event_id, member_id, penalty_rule_id, rule_name,
+  unit_amount_cents, count) ✅ umgesetzt (Migration 17). Snapshot von
+  Name/Betrag zum Buchungszeitpunkt, `count` = wie oft diese Strafart an
+  diesem Kegelabend fällig wurde. Sonstige manuelle Ad-hoc-Buchungen
+  laufen weiterhin direkt über `transaction`.
 - `transaction` – Kassenbuch (id, club_id, member_id, event_id, game_id,
-  type, amount_cents, note, paid) ✅ umgesetzt. Typen: `einzahlung`
-  (manuelle Bareinzahlung), `kegelgeld` (automatische Teilnahmegebühr,
-  eindeutig pro Termin), `strafe` (automatisch oder manuell, eindeutig
-  pro Spiel), `ausgabe`, `gutschrift`. `einzahlung`/`kegelgeld`/`strafe`
+  type, amount_cents, note, paid, penalty_id) ✅ umgesetzt. Typen:
+  `einzahlung` (manuelle Bareinzahlung), `kegelgeld` (automatische
+  Teilnahmegebühr, eindeutig pro Termin), `strafe` (automatisch über
+  Hausnummer-Formel/Freitext/Strafenkatalog oder manuell), `ausgabe`,
+  `gutschrift`. `einzahlung`/`kegelgeld`/`strafe`
   zählen alle **positiv** zum Gesamtbetrag eines Mitglieds (alles Geld,
   das in die Kasse eingezahlt wird), `gutschrift`/`ausgabe` negativ –
   kein Bankkonto-Gegeneinander-Verrechnen (siehe Migration 13). `paid`
-  trackt unabhängig davon, ob physisch bezahlt wurde. Automatische
+  trackt unabhängig davon, ob physisch bezahlt wurde. `penalty_id`
+  (Migration 17) verknüpft eine automatische Strafenkatalog-Buchung mit
+  ihrer `penalty`-Zeile. Automatische
   Buchung von Kegelgeld/Hausnummer-Strafe über
-  `record_game_scores`/`update_game_scores`; manuelle Buchungen
+  `record_game_scores`/`update_game_scores`, Strafenkatalog über
+  `record_event_penalties`; manuelle Buchungen
   (Bareinzahlung, Ausgabe, Ad-hoc-Strafe) sind über die
   `transaction_write_staff`-Policy möglich, aber noch ohne eigenen
   Screen (bisher nur die automatischen Buchungen haben eine UI).
@@ -383,7 +415,12 @@ Statistiken/Ranglisten werden als Postgres Views bzw. Funktionen über
   Admins/Kassierer sehen pro `game` zusätzlich "Bearbeiten" (→
   `/enter-score` mit `gameId`-Param) und "Löschen" (zwei Taps als
   Bestätigung – lokaler `confirmingGameId`-State statt `Alert`/Modal,
-  ruft die RPC `delete_game`).
+  ruft die RPC `delete_game`). Erfasste Strafenkatalog-Buchungen
+  (`penalty`) werden pro Termin ebenfalls angezeigt (Name der Strafart,
+  Anzahl, Gesamtbetrag); Admins/Kassierer sehen zusätzlich den Link
+  "Strafen erfassen" (→ `/enter-penalties` mit `eventId`-Param). Links
+  zu "Kegelkasse" und "Strafenkatalog" (für alle Mitglieder sichtbar)
+  stehen oberhalb der Terminliste.
 - `kegelclub-app/src/app/create-event.tsx` – legt einen Kegelabend
   (`event`, `type: 'kegelabend'`) für den eigenen Club an; Datum/
   Uhrzeit aktuell als zwei Text-Felder (`JJJJ-MM-TT` / `HH:MM`), kein
@@ -429,6 +466,24 @@ Statistiken/Ranglisten werden als Postgres Views bzw. Funktionen über
   mit Reset beim Moduswechsel), nur dass hier der Club-**Standard**
   selbst gespeichert wird statt eines Overrides für ein einzelnes
   Spiel. Verlinkt von `events.tsx` (nur für Admin/Kassierer sichtbar).
+- `kegelclub-app/src/app/strafenkatalog.tsx` – Verwaltung des freien
+  Strafenkatalogs: alle Mitglieder sehen die Liste der `penalty_rule`-
+  Einträge (Name + Betrag) sowie die "Gesamtliste" (Summe Anzahl/Betrag
+  je Strafart und Mitglied über alle Termine, client-seitig aus
+  `penalty` aggregiert). Admin/Kassierer sehen zusätzlich ein Formular
+  zum Anlegen neuer Strafarten (`insert` direkt in `penalty_rule`, keine
+  RPC nötig – reines CRUD ohne Query-übergreifende Logik) und einen
+  "Löschen"-Link pro Strafart (historische `penalty`-Buchungen bleiben
+  durch den Snapshot in `rule_name`/`unit_amount_cents` unverändert
+  lesbar, siehe Migration 17).
+- `kegelclub-app/src/app/enter-penalties.tsx` – Admin/Kassierer tragen
+  pro Termin (Route-Param `eventId`) für jedes Mitglied und jede
+  Strafart eine Anzahl ein (Grid: Zeilen = Mitglieder, Spalten =
+  `penalty_rule`); leer/0 = keine Buchung. Lädt bestehende `penalty`-
+  Zeilen des Termins zum Vorausfüllen (unterstützt Korrektur). Speichern
+  ruft immer `record_event_penalties` (Delete-und-Neu-Buchen, dieselbe
+  RPC für Erst- und Korrekturerfassung). Ohne Strafarten im Club zeigt
+  die Seite einen Hinweis, zuerst den Strafenkatalog zu befüllen.
 - `kegelclub-app/src/lib/member.ts` – `getCurrentMember()`: liest die
   `member`-Zeile des eingeloggten Users (id, club_id, role,
   display_name). Nimmt aktuell die erste gefundene Zeile – Mitglieder
@@ -469,12 +524,14 @@ regulärem Mitglied) gegen die lokale Supabase-Instanz getestet.
    (Kegelgeld pro Teilnahme + nach Platzierung gestaffelte
    Hausnummer-Strafe als Maximalbetrag-minus-Reduzierung-Formel,
    fest oder prozentual, Kontostände nach Rolle getrennt sichtbar),
-   ✅ Ergebnisse nachträglich bearbeiten/löschen. Damit ist der
+   ✅ Ergebnisse nachträglich bearbeiten/löschen, ✅ Freitext-Spieltyp,
+   ✅ freier Strafenkatalog pro Club (erfasst pro Termin, mit
+   Gesamtübersicht). Damit ist der
    MVP-Umfang aus dem ursprünglichen Plan erreicht.
-3. **Phase 2 – Ausbau:** weitere Spieltypen + konfigurierbare
-   Strafregeln, Statistiken/Ranglisten, Terminplanung mit Push
-   (inkl. Regeltermine/Serien, siehe "Offene Punkte"),
-   Live-Tafelmodus (Realtime).
+3. **Phase 2 – Ausbau:** weitere Spieltypen, Statistiken/Ranglisten,
+   Terminplanung mit Push (inkl. Regeltermine/Serien, siehe "Offene
+   Punkte"), Live-Tafelmodus (Realtime), "Pumpenkönig"-Zuschlag für
+   den Strafenkatalog.
 4. **Phase 3 – Finanzen & Turniere:** SEPA-XML-Export (Edge Function),
    Beitrags-/Rechnungswesen, Mannschaften/Turniere, Offline-Sync
    ausbauen, App-Store-Release.
@@ -518,23 +575,11 @@ regulärem Mitglied) gegen die lokale Supabase-Instanz getestet.
   `penalty`-Tabellen (z.B. 0,10 €/Minute nach `event.starts_at`), die
   dann als `transaction` in die Kegelkasse einfließt. Gehört fachlich
   zu Phase 1/2 (Kegelkasse) bzw. Phase 3 (Strafregeln), siehe Roadmap.
-- **Freier Strafenkatalog pro Club** (Idee, noch nicht umgesetzt): ein
-  Club soll seinen eigenen Katalog an Straf**arten** pflegen können
-  (z.B. "Pumpe", "Klingen"), jeweils mit Name + Strafbetrag – das ist
-  genau die schon vermerkte `penalty_rule`-Tabelle (club_id, name,
-  amount_cents), aber jetzt mit konkretem UI-Bedarf: eine Verwaltungs-
-  seite für Admin/Kassierer, um Strafarten anzulegen/zu ändern.
-  Zusätzlich: an einem Kegelabend soll pro Mitglied hochgezählt werden
-  können, wie oft welche Strafart fällig wurde (nicht nur ja/nein,
-  sondern eine Stückzahl) – d.h. `penalty` bräuchte mindestens
-  `event_id`, `member_id`, `penalty_rule_id`, `count`. Beim Speichern
-  entsteht daraus automatisch `count * amount_cents` als `'strafe'`-
-  `transaction`, analog zum bestehenden Muster in `record_game_scores`
-  (Kegelgeld/Hausnummer-Strafe). Sollte Name/Betrag der Regel zum
-  Buchungszeitpunkt in die `transaction`/`penalty`-Zeile mitkopiert
-  werden (Snapshot), damit spätere Änderungen am Katalog alte
-  Buchungen nicht nachträglich verändern? Noch offen.
-  Zusätzliche Idee für `penalty_rule`: eine Markierung, ob es zu
+- **"Pumpenkönig"-Zuschlag für den Strafenkatalog** (Idee, noch nicht
+  umgesetzt): der freie Strafenkatalog selbst ist umgesetzt
+  (`penalty_rule`/`penalty`, Migration 17, siehe Kern-Datenmodell und
+  App-Code `strafenkatalog.tsx`/`enter-penalties.tsx`) – offen ist nur
+  noch diese Zusatzidee: eine Markierung an `penalty_rule`, ob es zu
   dieser Strafart einen "Abend-Verlierer"-Zuschlag gibt (z.B.
   `has_king_surcharge boolean` + `king_surcharge_cents`) – wer an
   diesem Kegelabend die meisten Buchungen dieser einen Strafart hat
@@ -544,11 +589,9 @@ regulärem Mitglied) gegen die lokale Supabase-Instanz getestet.
   `penalty_rule_id`, nicht pro Buchung – vermutlich ein eigener
   "Abend abschließen"-Schritt statt automatisch bei jeder Buchung.
   Offene Frage: Gleichstand bei den meisten Buchungen (mehrere
-  potenzielle Könige) – alle zahlen? Keiner zahlt? Noch offen. Betrifft
-  `enter-score.tsx` (naheliegender Ort, um Strafen direkt neben den
-  Ergebnissen des Abends zu erfassen) und einen neuen Screen für die
-  Katalog-Verwaltung. Gehört fachlich zu Phase 1/2 (Kegelkasse) bzw.
-  Phase 3 (Strafregeln), siehe Roadmap.
+  potenzielle Könige) – alle zahlen? Keiner zahlt? Noch offen. Gehört
+  fachlich zu Phase 1/2 (Kegelkasse) bzw. Phase 3 (Strafregeln), siehe
+  Roadmap.
 - **Manuelle Kegelkasse-Buchungen:** `transaction_write_staff`
   erlaubt Admin/Kassierer bereits beliebige Buchungen (Bareinzahlung,
   Ausgabe, Ad-hoc-Strafe), aber `kasse.tsx` hat noch kein Formular
