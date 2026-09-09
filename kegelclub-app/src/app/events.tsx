@@ -33,6 +33,12 @@ type PenaltyResult = {
   count: number;
 };
 
+type KingSurchargeResult = {
+  memberId: string;
+  note: string;
+  amountCents: number;
+};
+
 const GAME_TYPE_LABELS: Record<string, string> = {
   kleine_hausnummer: 'Kleine Hausnummer',
   grosse_hausnummer: 'Große Hausnummer',
@@ -58,6 +64,7 @@ export default function EventsScreen() {
   const [attendance, setAttendance] = useState<Record<string, AttendanceStatus>>({});
   const [results, setResults] = useState<Record<string, GameResult[]>>({});
   const [penalties, setPenalties] = useState<Record<string, PenaltyResult[]>>({});
+  const [kingSurcharges, setKingSurcharges] = useState<Record<string, KingSurchargeResult[]>>({});
   const [memberNames, setMemberNames] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -107,28 +114,38 @@ export default function EventsScreen() {
 
     const eventIds = (eventRows ?? []).map((event) => event.id);
 
-    const [{ data: memberRows }, { data: gameRows }, { data: penaltyRows }] = await Promise.all([
-      supabase.from('member').select('id, display_name').eq('club_id', currentMember.club_id),
-      eventIds.length > 0
-        ? supabase.from('game').select('id, event_id, type, description').in('event_id', eventIds)
-        : Promise.resolve({
-            data: [] as { id: string; event_id: string; type: string; description: string | null }[],
-          }),
-      eventIds.length > 0
-        ? supabase
-            .from('penalty')
-            .select('event_id, member_id, rule_name, unit_amount_cents, count')
-            .in('event_id', eventIds)
-        : Promise.resolve({
-            data: [] as {
-              event_id: string;
-              member_id: string;
-              rule_name: string;
-              unit_amount_cents: number;
-              count: number;
-            }[],
-          }),
-    ]);
+    const [{ data: memberRows }, { data: gameRows }, { data: penaltyRows }, { data: kingSurchargeRows }] =
+      await Promise.all([
+        supabase.from('member').select('id, display_name').eq('club_id', currentMember.club_id),
+        eventIds.length > 0
+          ? supabase.from('game').select('id, event_id, type, description').in('event_id', eventIds)
+          : Promise.resolve({
+              data: [] as { id: string; event_id: string; type: string; description: string | null }[],
+            }),
+        eventIds.length > 0
+          ? supabase
+              .from('penalty')
+              .select('event_id, member_id, rule_name, unit_amount_cents, count')
+              .in('event_id', eventIds)
+          : Promise.resolve({
+              data: [] as {
+                event_id: string;
+                member_id: string;
+                rule_name: string;
+                unit_amount_cents: number;
+                count: number;
+              }[],
+            }),
+        eventIds.length > 0
+          ? supabase
+              .from('transaction')
+              .select('event_id, member_id, note, amount_cents')
+              .in('event_id', eventIds)
+              .not('king_surcharge_penalty_rule_id', 'is', null)
+          : Promise.resolve({
+              data: [] as { event_id: string; member_id: string; note: string | null; amount_cents: number }[],
+            }),
+      ]);
 
     const nameMap: Record<string, string> = {};
     for (const row of memberRows ?? []) {
@@ -165,10 +182,20 @@ export default function EventsScreen() {
       ];
     }
 
+    const kingSurchargeMap: Record<string, KingSurchargeResult[]> = {};
+    for (const row of kingSurchargeRows ?? []) {
+      if (!row.event_id) continue;
+      kingSurchargeMap[row.event_id] = [
+        ...(kingSurchargeMap[row.event_id] ?? []),
+        { memberId: row.member_id, note: row.note ?? '', amountCents: row.amount_cents },
+      ];
+    }
+
     setEvents(eventRows ?? []);
     setAttendance(attendanceMap);
     setResults(resultMap);
     setPenalties(penaltyMap);
+    setKingSurcharges(kingSurchargeMap);
     setMemberNames(nameMap);
     setLoading(false);
   }, []);
@@ -329,6 +356,16 @@ export default function EventsScreen() {
                       <ThemedText key={`${penalty.memberId}-${penalty.ruleName}-${index}`} type="small">
                         {memberNames[penalty.memberId] ?? '?'}: {penalty.ruleName} ×{penalty.count} (
                         {formatEuro(penalty.unitAmountCents * penalty.count)})
+                      </ThemedText>
+                    ))}
+                  </ThemedView>
+                )}
+
+                {(kingSurcharges[event.id] ?? []).length > 0 && (
+                  <ThemedView style={styles.resultsBlock}>
+                    {(kingSurcharges[event.id] ?? []).map((surcharge, index) => (
+                      <ThemedText key={`${surcharge.memberId}-${index}`} type="small">
+                        👑 {memberNames[surcharge.memberId] ?? '?'}: {surcharge.note} ({formatEuro(surcharge.amountCents)})
                       </ThemedText>
                     ))}
                   </ThemedView>

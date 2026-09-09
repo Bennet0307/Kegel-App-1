@@ -10,6 +10,13 @@ import { getCurrentMember } from '@/lib/member';
 import { supabase } from '@/lib/supabase';
 
 type PenaltyMode = 'fest' | 'prozent';
+type TieMode = 'alle_zahlen' | 'keiner_zahlt' | 'geteilt';
+
+const TIE_MODES: { value: TieMode; label: string }[] = [
+  { value: 'alle_zahlen', label: 'Alle zahlen' },
+  { value: 'keiner_zahlt', label: 'Keiner zahlt' },
+  { value: 'geteilt', label: 'Zuschlag wird geteilt' },
+];
 
 function centsToEuroString(cents: number) {
   return (cents / 100).toFixed(2);
@@ -28,6 +35,7 @@ export default function ClubSettingsScreen() {
   const [penaltyMode, setPenaltyMode] = useState<PenaltyMode>('fest');
   const [step, setStep] = useState('');
   const [stepDefaults, setStepDefaults] = useState<{ fest: string; prozent: string }>({ fest: '', prozent: '' });
+  const [tieMode, setTieMode] = useState<TieMode>('alle_zahlen');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -48,7 +56,7 @@ export default function ClubSettingsScreen() {
       const { data: clubRow, error: clubError } = await supabase
         .from('club')
         .select(
-          'kegelgeld_cents, hausnummer_penalty_max_cents, hausnummer_penalty_mode, hausnummer_penalty_step_cents, hausnummer_penalty_step_percent',
+          'kegelgeld_cents, hausnummer_penalty_max_cents, hausnummer_penalty_mode, hausnummer_penalty_step_cents, hausnummer_penalty_step_percent, king_surcharge_tie_mode',
         )
         .eq('id', currentMember.club_id)
         .single();
@@ -68,6 +76,7 @@ export default function ClubSettingsScreen() {
       };
       setStepDefaults(defaults);
       setStep(defaults[clubRow.hausnummer_penalty_mode as PenaltyMode]);
+      setTieMode(clubRow.king_surcharge_tie_mode as TieMode);
 
       setLoading(false);
     })();
@@ -97,6 +106,7 @@ export default function ClubSettingsScreen() {
         hausnummer_penalty_mode: penaltyMode,
         hausnummer_penalty_step_cents: penaltyMode === 'fest' ? Math.round(stepValue * 100) : 0,
         hausnummer_penalty_step_percent: penaltyMode === 'prozent' ? stepValue : 0,
+        king_surcharge_tie_mode: tieMode,
       })
       .eq('id', clubId);
 
@@ -197,6 +207,23 @@ export default function ClubSettingsScreen() {
                   setStep(stepDefaults[mode]);
                 }}>
                 <ThemedText type="small">{mode === 'fest' ? 'Fester Betrag' : 'Prozentual'}</ThemedText>
+              </Pressable>
+            ))}
+          </ThemedView>
+
+          <ThemedText type="small" themeColor="textSecondary">
+            Pumpenkönig-Zuschlag: Verhalten bei Gleichstand
+          </ThemedText>
+          <ThemedView style={styles.typeRow}>
+            {TIE_MODES.map((option) => (
+              <Pressable
+                key={option.value}
+                style={[
+                  styles.typeButton,
+                  { backgroundColor: tieMode === option.value ? theme.backgroundSelected : theme.backgroundElement },
+                ]}
+                onPress={() => setTieMode(option.value)}>
+                <ThemedText type="small">{option.label}</ThemedText>
               </Pressable>
             ))}
           </ThemedView>

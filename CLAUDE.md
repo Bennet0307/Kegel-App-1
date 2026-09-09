@@ -327,6 +327,40 @@ Liegen in `supabase/migrations/`, chronologisch:
     `update_game_scores`/`update_freitext_game`). Bewusst **kein**
     Kegelgeld in dieser RPC – das bleibt ausschließlich an die
     Spiel-Teilnahme gebunden (Migration 15/16).
+18. **`king_surcharge`** – "Pumpenkönig"-Zuschlag, die letzte offene
+    Zusatzidee zum Strafenkatalog (Migration 17). Neue Spalten
+    `penalty_rule.has_king_surcharge boolean` / `.king_surcharge_cents`:
+    eine Strafart kann markiert werden, dass zusätzlich ein Zuschlag
+    für den "Abend-Verlierer" dieser Strafart fällig wird. Neue Spalte
+    `club.king_surcharge_tie_mode` (`'alle_zahlen'` / `'keiner_zahlt'` /
+    `'geteilt'`) – **Club-Einstellung** statt fest codiertem Verhalten,
+    da unterschiedliche Clubs Gleichstand (mehrere Mitglieder mit
+    gleich vielen Buchungen einer Strafart am selben Abend)
+    unterschiedlich handhaben wollen. `record_event_penalties` berechnet
+    den Zuschlag **automatisch bei jedem Speichern** neu (kein
+    separater "Abend abschließen"-Schritt, bewusste Vereinfachung
+    gegenüber der ursprünglichen Idee in "Offene Punkte" – Ergebnis ist
+    ohnehin nach jedem Speichern vollständig neu abgeleitet, genau wie
+    bei den anderen Replace-Mustern in dieser App): pro Strafart mit
+    `has_king_surcharge` wird der Maximalwert von `penalty.count` für
+    diesen Termin ermittelt, alle Mitglieder mit diesem Maximum sind
+    "König"; bei `'alle_zahlen'` zahlt jeder von ihnen den vollen
+    Zuschlag, bei `'geteilt'` den Zuschlag geteilt durch die Anzahl der
+    Gleichständigen (gerundet), bei `'keiner_zahlt'` entfällt der
+    Zuschlag bei mehr als einem Gewinner komplett. Neue Spalte
+    `transaction.king_surcharge_penalty_rule_id` (statt Wiederverwendung
+    von `penalty_id`, da der Zuschlag keine eigene Zählbuchung ist,
+    sondern eine abgeleitete Summenbetrachtung) erlaubt, vor dem
+    Neuberechnen gezielt nur die alten Zuschlag-Buchungen eines Termins
+    zu löschen, ohne die eigentlichen Strafenkatalog-Buchungen
+    anzufassen.
+19. **`king_surcharge_note_format`** – der Note-Text der Zuschlag-
+    Buchung folgt immer dem Muster `"<Strafart>-König"` (z.B. Strafart
+    "Klingel" → `"Klingel-König"`, Strafart "Pumpen" → `"Pumpen-König"`)
+    statt eines fest codierten `"Pumpenkönig: <Strafart>"` – der
+    generische "Pumpenkönig"-Name in Doku/UI-Labels bezieht sich nur auf
+    das Feature selbst, nicht auf den tatsächlich gebuchten Namen, der
+    immer von der jeweiligen Strafart abgeleitet wird.
 
 ## Kern-Datenmodell (Ausgangspunkt, teils noch nicht als Migration umgesetzt)
 
@@ -353,11 +387,16 @@ Liegen in `supabase/migrations/`, chronologisch:
   member_id, pins) ✅ umgesetzt. Bei den Hausnummer-Spielen steht hier
   die fertige 3-stellige Zahl (0–999), nicht die einzelnen Würfe.
 - `penalty_rule` – freier Strafenkatalog pro Club (id, club_id, name,
-  amount_cents) ✅ umgesetzt (Migration 17). Unabhängig von der
+  amount_cents, has_king_surcharge, king_surcharge_cents) ✅ umgesetzt
+  (Migration 17, Zuschlag-Spalten Migration 18). Unabhängig von der
   Hausnummer-Strafformel (Maximalbetrag + feste/prozentuale Reduzierung
   pro Rang, `club.hausnummer_penalty_*`, pro Aufruf über
   `record_game_scores`/`update_game_scores` überschreibbar), die weiterhin
-  nur die zwei Hausnummer-Spiele bedient.
+  nur die zwei Hausnummer-Spiele bedient. `has_king_surcharge`/
+  `king_surcharge_cents` steuern den "Pumpenkönig"-Zuschlag: wer an
+  einem Termin die meisten Buchungen dieser Strafart hat, zahlt
+  zusätzlich diesen Betrag (siehe `club.king_surcharge_tie_mode` unten
+  für das Gleichstand-Verhalten).
 - `penalty` – Strafenkatalog-Buchung pro Termin und Mitglied (id,
   club_id, event_id, member_id, penalty_rule_id, rule_name,
   unit_amount_cents, count) ✅ umgesetzt (Migration 17). Snapshot von
@@ -365,7 +404,8 @@ Liegen in `supabase/migrations/`, chronologisch:
   diesem Kegelabend fällig wurde. Sonstige manuelle Ad-hoc-Buchungen
   laufen weiterhin direkt über `transaction`.
 - `transaction` – Kassenbuch (id, club_id, member_id, event_id, game_id,
-  type, amount_cents, note, paid, penalty_id) ✅ umgesetzt. Typen:
+  type, amount_cents, note, paid, penalty_id,
+  king_surcharge_penalty_rule_id) ✅ umgesetzt. Typen:
   `einzahlung` (manuelle Bareinzahlung), `kegelgeld` (automatische
   Teilnahmegebühr, eindeutig pro Termin), `strafe` (automatisch über
   Hausnummer-Formel/Freitext/Strafenkatalog oder manuell), `ausgabe`,
@@ -375,9 +415,12 @@ Liegen in `supabase/migrations/`, chronologisch:
   kein Bankkonto-Gegeneinander-Verrechnen (siehe Migration 13). `paid`
   trackt unabhängig davon, ob physisch bezahlt wurde. `penalty_id`
   (Migration 17) verknüpft eine automatische Strafenkatalog-Buchung mit
-  ihrer `penalty`-Zeile. Automatische
+  ihrer `penalty`-Zeile; `king_surcharge_penalty_rule_id` (Migration 18)
+  markiert eine automatische Pumpenkönig-Zuschlag-Buchung (keine eigene
+  `penalty`-Zeile, da abgeleitet). Automatische
   Buchung von Kegelgeld/Hausnummer-Strafe über
-  `record_game_scores`/`update_game_scores`, Strafenkatalog über
+  `record_game_scores`/`update_game_scores`, Strafenkatalog +
+  Pumpenkönig-Zuschlag über
   `record_event_penalties`; manuelle Buchungen
   (Bareinzahlung, Ausgabe, Ad-hoc-Strafe) sind über die
   `transaction_write_staff`-Policy möglich, aber noch ohne eigenen
@@ -420,7 +463,9 @@ Statistiken/Ranglisten werden als Postgres Views bzw. Funktionen über
   Anzahl, Gesamtbetrag); Admins/Kassierer sehen zusätzlich den Link
   "Strafen erfassen" (→ `/enter-penalties` mit `eventId`-Param). Links
   zu "Kegelkasse" und "Strafenkatalog" (für alle Mitglieder sichtbar)
-  stehen oberhalb der Terminliste.
+  stehen oberhalb der Terminliste. Automatische Pumpenkönig-Zuschlag-
+  Buchungen (`transaction.king_surcharge_penalty_rule_id`) werden
+  ebenfalls pro Termin angezeigt (👑-Symbol, Note-Text der Buchung).
 - `kegelclub-app/src/app/create-event.tsx` – legt einen Kegelabend
   (`event`, `type: 'kegelabend'`) für den eigenen Club an; Datum/
   Uhrzeit aktuell als zwei Text-Felder (`JJJJ-MM-TT` / `HH:MM`), kein
@@ -465,7 +510,10 @@ Statistiken/Ranglisten werden als Postgres Views bzw. Funktionen über
   wie in `enter-score.tsx` (Maximalbetrag/Modus-Umschalter/Reduzierung
   mit Reset beim Moduswechsel), nur dass hier der Club-**Standard**
   selbst gespeichert wird statt eines Overrides für ein einzelnes
-  Spiel. Verlinkt von `events.tsx` (nur für Admin/Kassierer sichtbar).
+  Spiel. Zusätzlich `club.king_surcharge_tie_mode` (Migration 18): drei
+  Buttons "Alle zahlen"/"Keiner zahlt"/"Zuschlag wird geteilt" für das
+  Gleichstand-Verhalten des Pumpenkönig-Zuschlags. Verlinkt von
+  `events.tsx` (nur für Admin/Kassierer sichtbar).
 - `kegelclub-app/src/app/strafenkatalog.tsx` – Verwaltung des freien
   Strafenkatalogs: alle Mitglieder sehen die Liste der `penalty_rule`-
   Einträge (Name + Betrag) sowie die "Gesamtliste" (Summe Anzahl/Betrag
@@ -475,7 +523,9 @@ Statistiken/Ranglisten werden als Postgres Views bzw. Funktionen über
   RPC nötig – reines CRUD ohne Query-übergreifende Logik) und einen
   "Löschen"-Link pro Strafart (historische `penalty`-Buchungen bleiben
   durch den Snapshot in `rule_name`/`unit_amount_cents` unverändert
-  lesbar, siehe Migration 17).
+  lesbar, siehe Migration 17). Das Formular hat zusätzlich eine
+  Checkbox "Pumpenkönig-Zuschlag" mit Betragsfeld (Migration 18); Regeln
+  mit aktivem Zuschlag zeigen ihn in der Liste mit 👑-Symbol an.
 - `kegelclub-app/src/app/enter-penalties.tsx` – Admin/Kassierer tragen
   pro Termin (Route-Param `eventId`) für jedes Mitglied und jede
   Strafart eine Anzahl ein (Grid: Zeilen = Mitglieder, Spalten =
@@ -526,12 +576,12 @@ regulärem Mitglied) gegen die lokale Supabase-Instanz getestet.
    fest oder prozentual, Kontostände nach Rolle getrennt sichtbar),
    ✅ Ergebnisse nachträglich bearbeiten/löschen, ✅ Freitext-Spieltyp,
    ✅ freier Strafenkatalog pro Club (erfasst pro Termin, mit
-   Gesamtübersicht). Damit ist der
+   Gesamtübersicht), ✅ "Pumpenkönig"-Zuschlag (Gleichstand-Verhalten
+   als Club-Einstellung). Damit ist der
    MVP-Umfang aus dem ursprünglichen Plan erreicht.
 3. **Phase 2 – Ausbau:** weitere Spieltypen, Statistiken/Ranglisten,
    Terminplanung mit Push (inkl. Regeltermine/Serien, siehe "Offene
-   Punkte"), Live-Tafelmodus (Realtime), "Pumpenkönig"-Zuschlag für
-   den Strafenkatalog.
+   Punkte"), Live-Tafelmodus (Realtime).
 4. **Phase 3 – Finanzen & Turniere:** SEPA-XML-Export (Edge Function),
    Beitrags-/Rechnungswesen, Mannschaften/Turniere, Offline-Sync
    ausbauen, App-Store-Release.
@@ -575,23 +625,6 @@ regulärem Mitglied) gegen die lokale Supabase-Instanz getestet.
   `penalty`-Tabellen (z.B. 0,10 €/Minute nach `event.starts_at`), die
   dann als `transaction` in die Kegelkasse einfließt. Gehört fachlich
   zu Phase 1/2 (Kegelkasse) bzw. Phase 3 (Strafregeln), siehe Roadmap.
-- **"Pumpenkönig"-Zuschlag für den Strafenkatalog** (Idee, noch nicht
-  umgesetzt): der freie Strafenkatalog selbst ist umgesetzt
-  (`penalty_rule`/`penalty`, Migration 17, siehe Kern-Datenmodell und
-  App-Code `strafenkatalog.tsx`/`enter-penalties.tsx`) – offen ist nur
-  noch diese Zusatzidee: eine Markierung an `penalty_rule`, ob es zu
-  dieser Strafart einen "Abend-Verlierer"-Zuschlag gibt (z.B.
-  `has_king_surcharge boolean` + `king_surcharge_cents`) – wer an
-  diesem Kegelabend die meisten Buchungen dieser einen Strafart hat
-  (z.B. die meisten "Pumpe"), zahlt am Ende zusätzlich Betrag X
-  obendrauf (z.B. als "Pumpenkönig"). Auswertung passiert also erst
-  nach Ende des Abends über alle `penalty`-Zeilen dieses `event_id` +
-  `penalty_rule_id`, nicht pro Buchung – vermutlich ein eigener
-  "Abend abschließen"-Schritt statt automatisch bei jeder Buchung.
-  Offene Frage: Gleichstand bei den meisten Buchungen (mehrere
-  potenzielle Könige) – alle zahlen? Keiner zahlt? Noch offen. Gehört
-  fachlich zu Phase 1/2 (Kegelkasse) bzw. Phase 3 (Strafregeln), siehe
-  Roadmap.
 - **Manuelle Kegelkasse-Buchungen:** `transaction_write_staff`
   erlaubt Admin/Kassierer bereits beliebige Buchungen (Bareinzahlung,
   Ausgabe, Ad-hoc-Strafe), aber `kasse.tsx` hat noch kein Formular

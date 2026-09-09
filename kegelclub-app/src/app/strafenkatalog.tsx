@@ -9,7 +9,13 @@ import { useTheme } from '@/hooks/use-theme';
 import { getCurrentMember, type CurrentMember } from '@/lib/member';
 import { supabase } from '@/lib/supabase';
 
-type PenaltyRule = { id: string; name: string; amount_cents: number };
+type PenaltyRule = {
+  id: string;
+  name: string;
+  amount_cents: number;
+  has_king_surcharge: boolean;
+  king_surcharge_cents: number;
+};
 type PenaltyRow = { member_id: string; penalty_rule_id: string | null; rule_name: string; unit_amount_cents: number; count: number };
 
 function formatEuro(cents: number) {
@@ -24,6 +30,8 @@ export default function StrafenkatalogScreen() {
   const [memberNames, setMemberNames] = useState<Record<string, string>>({});
   const [newName, setNewName] = useState('');
   const [newAmount, setNewAmount] = useState('');
+  const [newHasKingSurcharge, setNewHasKingSurcharge] = useState(false);
+  const [newKingSurchargeAmount, setNewKingSurchargeAmount] = useState('');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -45,7 +53,7 @@ export default function StrafenkatalogScreen() {
     const [{ data: ruleRows, error: rulesError }, { data: penaltyRows }, { data: memberRows }] = await Promise.all([
       supabase
         .from('penalty_rule')
-        .select('id, name, amount_cents')
+        .select('id, name, amount_cents, has_king_surcharge, king_surcharge_cents')
         .eq('club_id', currentMember.club_id)
         .order('name', { ascending: true }),
       supabase
@@ -89,12 +97,25 @@ export default function StrafenkatalogScreen() {
       return;
     }
 
+    let kingSurchargeCents = 0;
+    if (newHasKingSurcharge) {
+      kingSurchargeCents = Math.round(Number(newKingSurchargeAmount.replace(',', '.')) * 100);
+      if (Number.isNaN(kingSurchargeCents) || kingSurchargeCents <= 0) {
+        setError('Bitte einen gültigen Pumpenkönig-Zuschlag angeben.');
+        return;
+      }
+    }
+
     setSaving(true);
     setError(null);
 
-    const { error: insertError } = await supabase
-      .from('penalty_rule')
-      .insert({ club_id: member.club_id, name: newName.trim(), amount_cents: amountCents });
+    const { error: insertError } = await supabase.from('penalty_rule').insert({
+      club_id: member.club_id,
+      name: newName.trim(),
+      amount_cents: amountCents,
+      has_king_surcharge: newHasKingSurcharge,
+      king_surcharge_cents: kingSurchargeCents,
+    });
 
     setSaving(false);
 
@@ -105,6 +126,8 @@ export default function StrafenkatalogScreen() {
 
     setNewName('');
     setNewAmount('');
+    setNewHasKingSurcharge(false);
+    setNewKingSurchargeAmount('');
     load();
   }
 
@@ -155,18 +178,25 @@ export default function StrafenkatalogScreen() {
           )}
 
           {rules.map((rule) => (
-            <ThemedView key={rule.id} type="backgroundElement" style={styles.row}>
-              <ThemedText>{rule.name}</ThemedText>
+            <ThemedView key={rule.id} type="backgroundElement" style={styles.ruleCard}>
               <ThemedView style={styles.row}>
-                <ThemedText type="smallBold">{formatEuro(rule.amount_cents)}</ThemedText>
-                {isStaff && (
-                  <Pressable onPress={() => handleDeleteRule(rule.id)}>
-                    <ThemedText type="small" style={styles.deleteLink}>
-                      Löschen
-                    </ThemedText>
-                  </Pressable>
-                )}
+                <ThemedText>{rule.name}</ThemedText>
+                <ThemedView style={styles.row}>
+                  <ThemedText type="smallBold">{formatEuro(rule.amount_cents)}</ThemedText>
+                  {isStaff && (
+                    <Pressable onPress={() => handleDeleteRule(rule.id)}>
+                      <ThemedText type="small" style={styles.deleteLink}>
+                        Löschen
+                      </ThemedText>
+                    </Pressable>
+                  )}
+                </ThemedView>
               </ThemedView>
+              {rule.has_king_surcharge && (
+                <ThemedText type="small" themeColor="textSecondary">
+                  👑 {rule.name}-König: {formatEuro(rule.king_surcharge_cents)}
+                </ThemedText>
+              )}
             </ThemedView>
           ))}
 
@@ -189,6 +219,32 @@ export default function StrafenkatalogScreen() {
                   style={[styles.input, styles.amountInput, { color: theme.text, backgroundColor: theme.backgroundElement }]}
                 />
               </ThemedView>
+
+              <Pressable
+                style={styles.checkboxRow}
+                onPress={() => setNewHasKingSurcharge((prev) => !prev)}>
+                <ThemedView
+                  style={[
+                    styles.checkbox,
+                    { backgroundColor: newHasKingSurcharge ? theme.backgroundSelected : theme.backgroundElement },
+                  ]}
+                />
+                <ThemedText type="small">
+                  {newName.trim() || 'Diese Strafart'}-König-Zuschlag (wer die meisten hat, zahlt extra)
+                </ThemedText>
+              </Pressable>
+
+              {newHasKingSurcharge && (
+                <TextInput
+                  value={newKingSurchargeAmount}
+                  onChangeText={setNewKingSurchargeAmount}
+                  placeholder="Zuschlag in € (z.B. 1.00)"
+                  placeholderTextColor={theme.textSecondary}
+                  keyboardType="decimal-pad"
+                  style={[styles.input, { color: theme.text, backgroundColor: theme.backgroundElement }]}
+                />
+              )}
+
               {saving ? (
                 <ActivityIndicator />
               ) : (
@@ -258,10 +314,23 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
+    gap: Spacing.two,
+  },
+  ruleCard: {
     borderRadius: Spacing.two,
     paddingHorizontal: Spacing.three,
     paddingVertical: Spacing.two,
+    gap: Spacing.one,
+  },
+  checkboxRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
     gap: Spacing.two,
+  },
+  checkbox: {
+    width: 20,
+    height: 20,
+    borderRadius: Spacing.half,
   },
   deleteLink: {
     color: '#d33',
