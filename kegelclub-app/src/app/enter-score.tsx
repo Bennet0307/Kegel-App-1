@@ -18,21 +18,14 @@ const GAME_TYPES: { value: GameType; label: string }[] = [
 ];
 
 type Digits = { h: string; t: string; e: string };
+type PenaltyMode = 'fest' | 'prozent';
 
-// Bewusst mit Punkt als Dezimaltrennzeichen (nicht toLocaleString('de-DE')):
-// Komma trennt hier die Liste der Beträge, ein deutsches Dezimalkomma würde
-// mit diesem Listentrenner kollidieren und die Staffel falsch zerlegen.
-function formatSchedule(centsList: number[]) {
-  return centsList.map((cents) => (cents / 100).toFixed(2)).join(', ');
+function centsToEuroString(cents: number) {
+  return (cents / 100).toFixed(2);
 }
 
-function parseSchedule(text: string): number[] | null {
-  if (text.trim() === '') return null;
-  return text
-    .split(',')
-    .map((part) => part.trim())
-    .filter((part) => part !== '')
-    .map((part) => Math.round(Number(part) * 100));
+function euroStringToCents(value: string) {
+  return Math.round(Number(value.replace(',', '.')) * 100);
 }
 
 export default function EnterScoreScreen() {
@@ -43,8 +36,10 @@ export default function EnterScoreScreen() {
   const [members, setMembers] = useState<{ id: string; display_name: string }[]>([]);
   const [gameType, setGameType] = useState<GameType>('grosse_hausnummer');
   const [digitsByMember, setDigitsByMember] = useState<Record<string, Digits>>({});
-  const [defaultSchedule, setDefaultSchedule] = useState<number[]>([]);
-  const [scheduleOverride, setScheduleOverride] = useState('');
+  const [maxEuro, setMaxEuro] = useState('');
+  const [penaltyMode, setPenaltyMode] = useState<PenaltyMode>('fest');
+  const [step, setStep] = useState('');
+  const [stepDefaults, setStepDefaults] = useState<{ fest: string; prozent: string }>({ fest: '', prozent: '' });
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -66,7 +61,9 @@ export default function EnterScoreScreen() {
           .order('display_name', { ascending: true }),
         supabase
           .from('club')
-          .select('hausnummer_penalty_schedule_cents')
+          .select(
+            'hausnummer_penalty_max_cents, hausnummer_penalty_mode, hausnummer_penalty_step_cents, hausnummer_penalty_step_percent',
+          )
           .eq('id', currentMember.club_id)
           .single(),
       ]);
@@ -76,18 +73,40 @@ export default function EnterScoreScreen() {
       } else {
         setMembers(memberRows ?? []);
       }
-      setDefaultSchedule(clubRow?.hausnummer_penalty_schedule_cents ?? []);
+
+      // Vorbelegung mit dem Club-Standard; bei Bearbeiten unten ggf.
+      // durch den tatsächlichen Snapshot des Spiels überschrieben.
+      if (clubRow) {
+        setMaxEuro(centsToEuroString(clubRow.hausnummer_penalty_max_cents));
+        setPenaltyMode(clubRow.hausnummer_penalty_mode as PenaltyMode);
+        const defaults = {
+          fest: centsToEuroString(clubRow.hausnummer_penalty_step_cents),
+          prozent: String(clubRow.hausnummer_penalty_step_percent),
+        };
+        setStepDefaults(defaults);
+        setStep(defaults[clubRow.hausnummer_penalty_mode as PenaltyMode]);
+      }
 
       if (gameId) {
         const [{ data: gameRow }, { data: scoreRows }] = await Promise.all([
-          supabase.from('game').select('type, penalty_schedule_cents').eq('id', gameId).single(),
+          supabase
+            .from('game')
+            .select('type, penalty_max_cents, penalty_mode, penalty_step_cents, penalty_step_percent')
+            .eq('id', gameId)
+            .single(),
           supabase.from('score').select('member_id, pins').eq('game_id', gameId),
         ]);
 
         if (gameRow) {
           setGameType(gameRow.type as GameType);
-          if (gameRow.penalty_schedule_cents?.length) {
-            setScheduleOverride(formatSchedule(gameRow.penalty_schedule_cents));
+          if (gameRow.penalty_max_cents != null && gameRow.penalty_mode) {
+            setMaxEuro(centsToEuroString(gameRow.penalty_max_cents));
+            setPenaltyMode(gameRow.penalty_mode as PenaltyMode);
+            setStep(
+              gameRow.penalty_mode === 'prozent'
+                ? String(gameRow.penalty_step_percent)
+                : centsToEuroString(gameRow.penalty_step_cents ?? 0),
+            );
           }
         }
 
@@ -138,27 +157,35 @@ export default function EnterScoreScreen() {
       return;
     }
 
-    const overrideSchedule = parseSchedule(scheduleOverride);
-    if (scheduleOverride.trim() !== '' && (!overrideSchedule || overrideSchedule.some(Number.isNaN))) {
-      setError('Strafstaffel ungültig. Bitte Beträge durch Komma getrennt angeben, z.B. 0.50, 0.30, 0.20');
+    const maxCents = euroStringToCents(maxEuro);
+    const stepValue = Number(step.replace(',', '.'));
+    if (Number.isNaN(maxCents) || Number.isNaN(stepValue)) {
+      setError('Bitte Maximalbetrag und Reduzierung als Zahl angeben.');
       return;
     }
 
     setSaving(true);
     setError(null);
 
+    const penaltyParams = {
+      p_penalty_max_cents: maxCents,
+      p_penalty_mode: penaltyMode,
+      p_penalty_step_cents: penaltyMode === 'fest' ? Math.round(stepValue * 100) : 0,
+      p_penalty_step_percent: penaltyMode === 'prozent' ? stepValue : 0,
+    };
+
     const { error: rpcError } = isEditing
       ? await supabase.rpc('update_game_scores', {
           p_game_id: gameId,
           p_type: gameType,
           p_scores: scores,
-          p_penalty_schedule_cents: overrideSchedule,
+          ...penaltyParams,
         })
       : await supabase.rpc('record_game_scores', {
           p_event_id: eventId,
           p_type: gameType,
           p_scores: scores,
-          p_penalty_schedule_cents: overrideSchedule,
+          ...penaltyParams,
         });
 
     setSaving(false);
@@ -232,16 +259,55 @@ export default function EnterScoreScreen() {
           })}
 
           <ThemedText type="small" themeColor="textSecondary">
-            Strafstaffel überschreiben (optional, Beträge in €, absteigend vom Verlierer, durch Komma
-            getrennt){defaultSchedule.length > 0 ? ` – Standard: ${formatSchedule(defaultSchedule)}` : ''}
+            Strafe: Verlierer zahlt den Maximalbetrag, jeder bessere Rang zahlt weniger
           </ThemedText>
-          <TextInput
-            value={scheduleOverride}
-            onChangeText={setScheduleOverride}
-            placeholder="z.B. 0.50, 0.30, 0.20, 0.10"
-            placeholderTextColor={theme.textSecondary}
-            style={[styles.input, { color: theme.text, backgroundColor: theme.backgroundElement }]}
-          />
+
+          <ThemedView style={styles.penaltyRow}>
+            <ThemedView style={styles.penaltyField}>
+              <ThemedText type="small" themeColor="textSecondary">
+                Maximalbetrag (€)
+              </ThemedText>
+              <TextInput
+                value={maxEuro}
+                onChangeText={setMaxEuro}
+                placeholder="0.50"
+                placeholderTextColor={theme.textSecondary}
+                keyboardType="decimal-pad"
+                style={[styles.input, { color: theme.text, backgroundColor: theme.backgroundElement }]}
+              />
+            </ThemedView>
+
+            <ThemedView style={styles.penaltyField}>
+              <ThemedText type="small" themeColor="textSecondary">
+                Reduzierung pro Rang ({penaltyMode === 'prozent' ? '%' : '€'})
+              </ThemedText>
+              <TextInput
+                value={step}
+                onChangeText={setStep}
+                placeholder={penaltyMode === 'prozent' ? '20' : '0.10'}
+                placeholderTextColor={theme.textSecondary}
+                keyboardType="decimal-pad"
+                style={[styles.input, { color: theme.text, backgroundColor: theme.backgroundElement }]}
+              />
+            </ThemedView>
+          </ThemedView>
+
+          <ThemedView style={styles.typeRow}>
+            {(['fest', 'prozent'] as const).map((mode) => (
+              <Pressable
+                key={mode}
+                style={[
+                  styles.typeButton,
+                  { backgroundColor: penaltyMode === mode ? theme.backgroundSelected : theme.backgroundElement },
+                ]}
+                onPress={() => {
+                  setPenaltyMode(mode);
+                  setStep(stepDefaults[mode]);
+                }}>
+                <ThemedText type="small">{mode === 'fest' ? 'Fester Betrag' : 'Prozentual'}</ThemedText>
+              </Pressable>
+            ))}
+          </ThemedView>
 
           {error && <ThemedText style={styles.error}>{error}</ThemedText>}
 
@@ -316,6 +382,14 @@ const styles = StyleSheet.create({
     borderRadius: Spacing.two,
     paddingHorizontal: Spacing.three,
     fontSize: 16,
+  },
+  penaltyRow: {
+    flexDirection: 'row',
+    gap: Spacing.two,
+  },
+  penaltyField: {
+    flex: 1,
+    gap: Spacing.half,
   },
   error: {
     color: '#d33',

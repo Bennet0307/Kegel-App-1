@@ -20,6 +20,7 @@ export default function RootLayout() {
         <Stack.Screen name="create-event" options={{ title: 'Kegelabend anlegen' }} />
         <Stack.Screen name="enter-score" options={{ title: 'Ergebnisse erfassen' }} />
         <Stack.Screen name="kasse" options={{ title: 'Kegelkasse' }} />
+        <Stack.Screen name="club-settings" options={{ title: 'Club-Einstellungen' }} />
       </Stack>
     </ThemeProvider>
   );

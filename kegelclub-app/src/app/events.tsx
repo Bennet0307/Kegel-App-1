@@ -183,6 +183,12 @@ export default function EventsScreen() {
           </Pressable>
 
           {isStaff && (
+            <Pressable onPress={() => router.push('/club-settings')}>
+              <ThemedText type="link">Club-Einstellungen</ThemedText>
+            </Pressable>
+          )}
+
+          {isStaff && (
             <Pressable onPress={() => router.push('/create-event')}>
               <ThemedText type="link">+ Kegelabend anlegen</ThemedText>
             </Pressable>
