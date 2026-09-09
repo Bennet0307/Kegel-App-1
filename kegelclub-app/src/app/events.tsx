@@ -26,9 +26,15 @@ type GameResult = {
 };
 
 const GAME_TYPE_LABELS: Record<string, string> = {
-  punktekegeln: 'Punktekegeln',
-  bundeskegeln: 'Bundeskegeln',
+  kleine_hausnummer: 'Kleine Hausnummer',
+  grosse_hausnummer: 'Große Hausnummer',
 };
+
+const HAUSNUMMER_TYPES = new Set(['kleine_hausnummer', 'grosse_hausnummer']);
+
+function formatScore(type: string, pins: number) {
+  return HAUSNUMMER_TYPES.has(type) ? String(pins).padStart(3, '0') : String(pins);
+}
 
 export default function EventsScreen() {
   const theme = useTheme();
@@ -206,7 +212,7 @@ export default function EventsScreen() {
                     </ThemedText>
                     {game.scores.map((score) => (
                       <ThemedText key={score.memberId} type="small">
-                        {memberNames[score.memberId] ?? '?'}: {score.pins}
+                        {memberNames[score.memberId] ?? '?'}: {formatScore(game.type, score.pins)}
                       </ThemedText>
                     ))}
                   </ThemedView>

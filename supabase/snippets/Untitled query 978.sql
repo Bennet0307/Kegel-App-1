@@ -1,1 +1,1 @@
-select * from attendance;
+select * from game;

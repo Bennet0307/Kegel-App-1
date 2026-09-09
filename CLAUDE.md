@@ -61,7 +61,9 @@ Zielplattformen: **Mobile (iOS/Android) und Web**, eine gemeinsame Codebase.
     Ergebnisse (`game`/`score`) und bucht dabei automatisch pro
     Mitglied mit Score eine `transaction` vom Typ `'einzahlung'`
     (`club.kegelgeld_cents`, Default 2,00 €) – ein Vorgang, kein
-    zweiter manueller Schritt. Kontostände (`kasse.tsx`) werden
+    zweiter manueller Schritt. Bei den beiden Hausnummer-Spielen
+    (siehe unten) kommt zusätzlich automatisch eine gestaffelte
+    `'strafe'`-Buchung nach Platzierung dazu. Kontostände (`kasse.tsx`) werden
     client-seitig aus den `transaction`-Zeilen aufsummiert, nicht über
     eine DB-View: eine View würde (wie die security-definer Helper)
     automatisch RLS auf `transaction` umgehen und wäre für jeden
@@ -164,12 +166,14 @@ Liegen in `supabase/migrations/`, chronologisch:
    (`attendance_write_own`, über die neue Hilfsfunktion
    `auth_member_ids()` – analog zu `auth_club_ids()`, um RLS-Rekursion
    auf `member` zu vermeiden, siehe oben).
-8. **`game_and_score`** – legt `game` (ein Spiel pro Kegelabend, Typ
-   `punktekegeln`/`bundeskegeln`) und `score` (Kegel-Ergebnis pro
-   Mitglied und Spiel, unique auf `(game_id, member_id)`) an. Sichtbar
-   für alle Mitglieder desselben Clubs; schreibbar nur für Admin/
-   Kassierer über die neue Hilfsfunktion `auth_staff_club_ids()`
-   (admin **oder** kassierer, analog zu `auth_admin_club_ids()`).
+8. **`game_and_score`** – legt `game` (ein Spiel pro Kegelabend) und
+   `score` (Kegel-Ergebnis pro Mitglied und Spiel, unique auf
+   `(game_id, member_id)`) an. Sichtbar für alle Mitglieder desselben
+   Clubs; schreibbar nur für Admin/Kassierer über die neue
+   Hilfsfunktion `auth_staff_club_ids()` (admin **oder** kassierer,
+   analog zu `auth_admin_club_ids()`). Ursprünglich mit den
+   Platzhalter-Spieltypen `punktekegeln`/`bundeskegeln` (siehe
+   Migration 10, ersetzt).
 9. **`kegelkasse`** – legt `transaction` an (Kassenbuch: `einzahlung`/
    `ausgabe`/`strafe`/`gutschrift`, `amount_cents`, optional `event_id`/
    `game_id`) sowie die Spalte `club.kegelgeld_cents` (Default 200 =
@@ -182,6 +186,27 @@ Liegen in `supabase/migrations/`, chronologisch:
    übergebenen Scores und bucht pro Mitglied mit Score automatisch
    das Kegelgeld als `'einzahlung'` (idempotent über einen partiellen
    Unique-Index auf `(game_id, member_id) WHERE game_id IS NOT NULL`).
+10. **`hausnummer`** – ersetzt die funktionslosen Platzhalter-Spieltypen
+    durch zwei echte Spiele: `kleine_hausnummer`/`grosse_hausnummer`
+    (3 Würfe à 0–9, zu einer 3-stelligen Zahl angeordnet – die
+    Anordnung passiert am Tisch selbst, die App erfasst nur das
+    fertige Ergebnis in `score.pins`, 0–999). Die alte
+    `game_type_check`-Constraint wird mit `NOT VALID` ersetzt, damit
+    bereits vorhandene Alt-Zeilen (falls welche existieren) nicht
+    validiert werden müssen und die Migration nicht daran scheitert.
+    Neu: `club.hausnummer_penalty_schedule_cents integer[]` (Default
+    `{50,30,20,10}`) als Standard-Strafstaffel, Index 1 = Verlierer
+    (höchste bzw. niedrigste Hausnummer, je nach Spielart), absteigend
+    – Ränge ohne Eintrag zahlen nichts. `game.penalty_schedule_cents`
+    speichert die tatsächlich verwendete Staffel als Snapshot.
+    `record_game_scores` bekommt einen vierten, optionalen Parameter
+    `p_penalty_schedule_cents` zum Überschreiben pro Termin/Aufruf;
+    ohne Override gilt der Club-Standard. Rang wird per `rank()` über
+    `pins` ermittelt (Ties = gleicher Rang = gleiche Strafe), Richtung
+    je nach Spielart umgedreht. Da pro Spiel jetzt zwei Buchungstypen
+    pro Mitglied möglich sind (Kegelgeld **und** Strafe), wurde der
+    Idempotenz-Unique-Index von `(game_id, member_id)` auf
+    `(game_id, member_id, type)` erweitert.
 
 ## Kern-Datenmodell (Ausgangspunkt, teils noch nicht als Migration umgesetzt)
 
@@ -196,14 +221,20 @@ Liegen in `supabase/migrations/`, chronologisch:
   von der Zusage) ist bewusst noch nicht Teil dieser Tabelle — noch
   offen, siehe unten.
 - `game` – ein gespieltes Spiel pro Event (id, club_id, event_id,
-  type) ✅ umgesetzt. Aktuell **ein** generischer Spieltyp mit
-  einfachem Kegel-Gesamtergebnis pro Mitglied, keine konfigurierbare
-  Regel-Engine (bewusst, siehe "Offene Punkte").
+  type, penalty_schedule_cents) ✅ umgesetzt. Genau zwei Spieltypen:
+  `kleine_hausnummer`/`grosse_hausnummer` (3 Würfe zu einer 3-stelligen
+  Zahl, Sieger = größte bzw. kleinste Zahl). Weitere Spieltypen mit
+  eigener Regel-Engine sind bewusst noch nicht gebaut (siehe "Offene
+  Punkte").
 - `score` – Ergebnis pro Mitglied und Spiel (id, club_id, game_id,
-  member_id, pins) ✅ umgesetzt.
-- `penalty_rule` / `penalty` – frei konfigurierbare Strafregeln — noch
-  offen (siehe "Offene Punkte": Einchecken/Verspätungsstrafe). Manuelle
-  Ad-hoc-Buchungen laufen vorerst direkt über `transaction`.
+  member_id, pins) ✅ umgesetzt. Bei den Hausnummer-Spielen steht hier
+  die fertige 3-stellige Zahl (0–999), nicht die einzelnen Würfe.
+- `penalty_rule` / `penalty` – als eigene, konfigurierbare Tabellen
+  weiterhin — noch offen. Die Hausnummer-Strafstaffel
+  (`club.hausnummer_penalty_schedule_cents`, pro Aufruf über
+  `record_game_scores` überschreibbar) deckt den aktuellen Bedarf
+  bereits ab, ohne eine generische Regel-Engine zu brauchen. Sonstige
+  manuelle Ad-hoc-Buchungen laufen direkt über `transaction`.
 - `transaction` – Kassenbuch (id, club_id, member_id, event_id, game_id,
   type, amount_cents, note) ✅ umgesetzt. Automatische Buchung von
   Kegelgeld über `record_game_scores`; manuelle Buchungen (Bareinzahlung,
@@ -235,14 +266,21 @@ Statistiken/Ranglisten werden als Postgres Views bzw. Funktionen über
   eigenen Clubs (`getCurrentMember()` → `club_id`), zeigt pro Event
   die eigene Zu-/Absage und erlaubt sie per Tap zu ändern (Upsert auf
   `attendance`, `onConflict: 'event_id,member_id'`). Admins/Kassierer
-  sehen zusätzlich einen Link zu `/create-event`.
+  sehen zusätzlich einen Link zu `/create-event`. Erfasste Ergebnisse
+  werden pro `game` angezeigt; bei den Hausnummer-Typen mit
+  führenden Nullen auf 3 Stellen formatiert (`formatScore()`).
 - `kegelclub-app/src/app/create-event.tsx` – legt einen Kegelabend
   (`event`, `type: 'kegelabend'`) für den eigenen Club an; Datum/
   Uhrzeit aktuell als zwei Text-Felder (`JJJJ-MM-TT` / `HH:MM`), kein
   Date-Picker-Package eingebunden.
 - `kegelclub-app/src/app/enter-score.tsx` – Admin/Kassierer wählen
-  einen Spieltyp und tragen pro Mitglied des Clubs die Kegelzahl ein
-  (leere Felder werden nicht mitgeschickt); ruft die RPC
+  Kleine/Große Hausnummer und tragen pro Mitglied drei Ziffern
+  (Hunderter/Zehner/Einer) ein, die zur 3-stelligen Hausnummer
+  zusammengerechnet werden (leere Mitglieder werden nicht
+  mitgeschickt); zusätzlich ein optionales Freitext-Feld, um die
+  Strafstaffel für diesen einen Aufruf zu überschreiben (Beträge in
+  €, kommagetrennt, sonst gilt `club.hausnummer_penalty_schedule_cents`
+  – wird zur Orientierung als Hinweistext angezeigt). Ruft die RPC
   `record_game_scores` auf (Event-ID kommt als Router-Param von
   `events.tsx`). Legt bei jedem Speichern ein **neues** `game` an –
   bestehende Ergebnisse eines Events lassen sich damit noch nicht
@@ -288,8 +326,9 @@ regulärem Mitglied) gegen die lokale Supabase-Instanz getestet.
    verbunden, erster vertikaler Durchstich (Auth + Club anlegen) steht.
 2. **Phase 1 – MVP:** ✅ Einladungscode-Beitritt für weitere Mitglieder,
    ✅ Kegelabend anlegen + Zu-/Absage, ✅ Ergebniserfassung (2
-   Spieltypen: Punktekegeln/Bundeskegeln) + automatische Kegelkasse
-   (Kegelgeld pro Teilnahme, Kontostände nach Rolle getrennt sichtbar).
+   Spieltypen: Kleine/Große Hausnummer) + automatische Kegelkasse
+   (Kegelgeld pro Teilnahme + nach Platzierung gestaffelte
+   Hausnummer-Strafe, Kontostände nach Rolle getrennt sichtbar).
    Damit ist der MVP-Umfang aus dem ursprünglichen Plan erreicht.
 3. **Phase 2 – Ausbau:** weitere Spieltypen + konfigurierbare
    Strafregeln, Statistiken/Ranglisten, Terminplanung mit Push
@@ -346,8 +385,10 @@ regulärem Mitglied) gegen die lokale Supabase-Instanz getestet.
   erlaubt Admin/Kassierer bereits beliebige Buchungen (Bareinzahlung,
   Ausgabe, Ad-hoc-Strafe), aber `kasse.tsx` hat noch kein Formular
   dafür – bisher nur Lesen + die automatische Kegelgeld-Buchung.
-- Konkrete Spielregeln/Strafregeln-Konfiguration (wie flexibel muss die
-  Regel-Engine sein?)
+- Konkrete Spielregeln/Strafregeln-Konfiguration für **weitere**
+  Spieltypen über Kleine/Große Hausnummer hinaus (wie flexibel muss
+  die Regel-Engine sein?) – für die zwei aktuellen Spiele reicht die
+  feste Hausnummer-Logik + frei konfigurierbare Strafstaffel.
 - SEPA-Lastschrift-Anbindung im Detail (Gläubiger-ID, Mandatsverwaltung)
 - Ob/wann self-hosted Supabase (Hetzner) statt Managed Supabase nötig wird
 - Separate öffentliche Marketing-/Landingpage (Format noch offen)

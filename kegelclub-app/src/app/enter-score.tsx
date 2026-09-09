@@ -10,20 +10,37 @@ import { useTheme } from '@/hooks/use-theme';
 import { getCurrentMember } from '@/lib/member';
 import { supabase } from '@/lib/supabase';
 
-type GameType = 'punktekegeln' | 'bundeskegeln';
+type GameType = 'kleine_hausnummer' | 'grosse_hausnummer';
 
 const GAME_TYPES: { value: GameType; label: string }[] = [
-  { value: 'punktekegeln', label: 'Punktekegeln' },
-  { value: 'bundeskegeln', label: 'Bundeskegeln' },
+  { value: 'kleine_hausnummer', label: 'Kleine Hausnummer' },
+  { value: 'grosse_hausnummer', label: 'Große Hausnummer' },
 ];
+
+type Digits = { h: string; t: string; e: string };
+
+function formatSchedule(centsList: number[]) {
+  return centsList.map((cents) => (cents / 100).toLocaleString('de-DE', { minimumFractionDigits: 2 })).join(', ');
+}
+
+function parseSchedule(text: string): number[] | null {
+  if (text.trim() === '') return null;
+  return text
+    .split(',')
+    .map((part) => part.trim().replace(',', '.'))
+    .filter((part) => part !== '')
+    .map((part) => Math.round(Number(part) * 100));
+}
 
 export default function EnterScoreScreen() {
   const theme = useTheme();
   const { eventId } = useLocalSearchParams<{ eventId: string }>();
 
   const [members, setMembers] = useState<{ id: string; display_name: string }[]>([]);
-  const [gameType, setGameType] = useState<GameType>('punktekegeln');
-  const [pinsByMember, setPinsByMember] = useState<Record<string, string>>({});
+  const [gameType, setGameType] = useState<GameType>('grosse_hausnummer');
+  const [digitsByMember, setDigitsByMember] = useState<Record<string, Digits>>({});
+  const [defaultSchedule, setDefaultSchedule] = useState<number[]>([]);
+  const [scheduleOverride, setScheduleOverride] = useState('');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -37,20 +54,36 @@ export default function EnterScoreScreen() {
         return;
       }
 
-      const { data, error: membersError } = await supabase
-        .from('member')
-        .select('id, display_name')
-        .eq('club_id', currentMember.club_id)
-        .order('display_name', { ascending: true });
+      const [{ data: memberRows, error: membersError }, { data: clubRow }] = await Promise.all([
+        supabase
+          .from('member')
+          .select('id, display_name')
+          .eq('club_id', currentMember.club_id)
+          .order('display_name', { ascending: true }),
+        supabase
+          .from('club')
+          .select('hausnummer_penalty_schedule_cents')
+          .eq('id', currentMember.club_id)
+          .single(),
+      ]);
 
       if (membersError) {
         setError(membersError.message);
       } else {
-        setMembers(data ?? []);
+        setMembers(memberRows ?? []);
       }
+      setDefaultSchedule(clubRow?.hausnummer_penalty_schedule_cents ?? []);
       setLoading(false);
     })();
   }, []);
+
+  function setDigit(memberId: string, key: keyof Digits, value: string) {
+    const digit = value.replace(/[^0-9]/g, '').slice(0, 1);
+    setDigitsByMember((prev) => {
+      const current = prev[memberId] ?? { h: '', t: '', e: '' };
+      return { ...prev, [memberId]: { ...current, [key]: digit } };
+    });
+  }
 
   async function handleSave() {
     if (!eventId) {
@@ -58,17 +91,30 @@ export default function EnterScoreScreen() {
       return;
     }
 
-    const scores = Object.entries(pinsByMember)
-      .filter(([, value]) => value.trim() !== '')
-      .map(([memberId, value]) => ({ member_id: memberId, pins: Number(value) }));
+    const scores: { member_id: string; pins: number }[] = [];
+    for (const memberRow of members) {
+      const digits = digitsByMember[memberRow.id];
+      if (!digits || (!digits.h && !digits.t && !digits.e)) continue;
+
+      if (digits.h === '' || digits.t === '' || digits.e === '') {
+        setError(`Bitte bei ${memberRow.display_name} alle drei Ziffern eintragen (oder alle leer lassen).`);
+        return;
+      }
+
+      scores.push({
+        member_id: memberRow.id,
+        pins: Number(digits.h) * 100 + Number(digits.t) * 10 + Number(digits.e),
+      });
+    }
 
     if (scores.length === 0) {
       setError('Bitte mindestens ein Ergebnis eintragen.');
       return;
     }
 
-    if (scores.some((score) => Number.isNaN(score.pins) || score.pins < 0)) {
-      setError('Ergebnisse müssen nicht-negative Zahlen sein.');
+    const overrideSchedule = parseSchedule(scheduleOverride);
+    if (scheduleOverride.trim() !== '' && (!overrideSchedule || overrideSchedule.some(Number.isNaN))) {
+      setError('Strafstaffel ungültig. Bitte Beträge durch Komma getrennt angeben, z.B. 0.50, 0.30, 0.20');
       return;
     }
 
@@ -79,6 +125,7 @@ export default function EnterScoreScreen() {
       p_event_id: eventId,
       p_type: gameType,
       p_scores: scores,
+      p_penalty_schedule_cents: overrideSchedule,
     });
 
     setSaving(false);
@@ -126,19 +173,42 @@ export default function EnterScoreScreen() {
             ))}
           </ThemedView>
 
-          {members.map((memberRow) => (
-            <ThemedView key={memberRow.id} style={styles.memberRow}>
-              <ThemedText style={styles.memberName}>{memberRow.display_name}</ThemedText>
-              <TextInput
-                value={pinsByMember[memberRow.id] ?? ''}
-                onChangeText={(value) => setPinsByMember((prev) => ({ ...prev, [memberRow.id]: value }))}
-                placeholder="Kegel"
-                placeholderTextColor={theme.textSecondary}
-                keyboardType="number-pad"
-                style={[styles.input, { color: theme.text, backgroundColor: theme.backgroundElement }]}
-              />
-            </ThemedView>
-          ))}
+          <ThemedText type="small" themeColor="textSecondary">
+            Hunderter / Zehner / Einer je Mitglied (0–9, leer = hat nicht gespielt)
+          </ThemedText>
+
+          {members.map((memberRow) => {
+            const digits = digitsByMember[memberRow.id] ?? { h: '', t: '', e: '' };
+            return (
+              <ThemedView key={memberRow.id} style={styles.memberRow}>
+                <ThemedText style={styles.memberName}>{memberRow.display_name}</ThemedText>
+                <ThemedView style={styles.digitRow}>
+                  {(['h', 't', 'e'] as const).map((key) => (
+                    <TextInput
+                      key={key}
+                      value={digits[key]}
+                      onChangeText={(value) => setDigit(memberRow.id, key, value)}
+                      keyboardType="number-pad"
+                      maxLength={1}
+                      style={[styles.digitInput, { color: theme.text, backgroundColor: theme.backgroundElement }]}
+                    />
+                  ))}
+                </ThemedView>
+              </ThemedView>
+            );
+          })}
+
+          <ThemedText type="small" themeColor="textSecondary">
+            Strafstaffel überschreiben (optional, Beträge in €, absteigend vom Verlierer, durch Komma
+            getrennt){defaultSchedule.length > 0 ? ` – Standard: ${formatSchedule(defaultSchedule)}` : ''}
+          </ThemedText>
+          <TextInput
+            value={scheduleOverride}
+            onChangeText={setScheduleOverride}
+            placeholder="z.B. 0.50, 0.30, 0.20, 0.10"
+            placeholderTextColor={theme.textSecondary}
+            style={[styles.input, { color: theme.text, backgroundColor: theme.backgroundElement }]}
+          />
 
           {error && <ThemedText style={styles.error}>{error}</ThemedText>}
 
@@ -197,13 +267,22 @@ const styles = StyleSheet.create({
   memberName: {
     flex: 1,
   },
-  input: {
-    width: 100,
+  digitRow: {
+    flexDirection: 'row',
+    gap: Spacing.one,
+  },
+  digitInput: {
+    width: 40,
     height: 44,
+    borderRadius: Spacing.two,
+    fontSize: 16,
+    textAlign: 'center',
+  },
+  input: {
+    height: 48,
     borderRadius: Spacing.two,
     paddingHorizontal: Spacing.three,
     fontSize: 16,
-    textAlign: 'right',
   },
   error: {
     color: '#d33',
