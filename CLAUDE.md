@@ -230,11 +230,13 @@ Liegen in `supabase/migrations/`, chronologisch:
   member_id, pins) ✅ umgesetzt. Bei den Hausnummer-Spielen steht hier
   die fertige 3-stellige Zahl (0–999), nicht die einzelnen Würfe.
 - `penalty_rule` / `penalty` – als eigene, konfigurierbare Tabellen
-  weiterhin — noch offen. Die Hausnummer-Strafstaffel
+  weiterhin — noch offen (siehe "Offene Punkte": Freier Strafenkatalog
+  pro Club). Die Hausnummer-Strafstaffel
   (`club.hausnummer_penalty_schedule_cents`, pro Aufruf über
-  `record_game_scores` überschreibbar) deckt den aktuellen Bedarf
-  bereits ab, ohne eine generische Regel-Engine zu brauchen. Sonstige
-  manuelle Ad-hoc-Buchungen laufen direkt über `transaction`.
+  `record_game_scores` überschreibbar) deckt den aktuellen Bedarf für
+  die zwei Hausnummer-Spiele bereits ab, ohne eine generische
+  Regel-Engine zu brauchen. Sonstige manuelle Ad-hoc-Buchungen laufen
+  direkt über `transaction`.
 - `transaction` – Kassenbuch (id, club_id, member_id, event_id, game_id,
   type, amount_cents, note) ✅ umgesetzt. Automatische Buchung von
   Kegelgeld über `record_game_scores`; manuelle Buchungen (Bareinzahlung,
@@ -377,6 +379,37 @@ regulärem Mitglied) gegen die lokale Supabase-Instanz getestet.
   `penalty`-Tabellen (z.B. 0,10 €/Minute nach `event.starts_at`), die
   dann als `transaction` in die Kegelkasse einfließt. Gehört fachlich
   zu Phase 1/2 (Kegelkasse) bzw. Phase 3 (Strafregeln), siehe Roadmap.
+- **Freier Strafenkatalog pro Club** (Idee, noch nicht umgesetzt): ein
+  Club soll seinen eigenen Katalog an Straf**arten** pflegen können
+  (z.B. "Pumpe", "Klingen"), jeweils mit Name + Strafbetrag – das ist
+  genau die schon vermerkte `penalty_rule`-Tabelle (club_id, name,
+  amount_cents), aber jetzt mit konkretem UI-Bedarf: eine Verwaltungs-
+  seite für Admin/Kassierer, um Strafarten anzulegen/zu ändern.
+  Zusätzlich: an einem Kegelabend soll pro Mitglied hochgezählt werden
+  können, wie oft welche Strafart fällig wurde (nicht nur ja/nein,
+  sondern eine Stückzahl) – d.h. `penalty` bräuchte mindestens
+  `event_id`, `member_id`, `penalty_rule_id`, `count`. Beim Speichern
+  entsteht daraus automatisch `count * amount_cents` als `'strafe'`-
+  `transaction`, analog zum bestehenden Muster in `record_game_scores`
+  (Kegelgeld/Hausnummer-Strafe). Sollte Name/Betrag der Regel zum
+  Buchungszeitpunkt in die `transaction`/`penalty`-Zeile mitkopiert
+  werden (Snapshot), damit spätere Änderungen am Katalog alte
+  Buchungen nicht nachträglich verändern? Noch offen.
+  Zusätzliche Idee für `penalty_rule`: eine Markierung, ob es zu
+  dieser Strafart einen "Abend-Verlierer"-Zuschlag gibt (z.B.
+  `has_king_surcharge boolean` + `king_surcharge_cents`) – wer an
+  diesem Kegelabend die meisten Buchungen dieser einen Strafart hat
+  (z.B. die meisten "Pumpe"), zahlt am Ende zusätzlich Betrag X
+  obendrauf (z.B. als "Pumpenkönig"). Auswertung passiert also erst
+  nach Ende des Abends über alle `penalty`-Zeilen dieses `event_id` +
+  `penalty_rule_id`, nicht pro Buchung – vermutlich ein eigener
+  "Abend abschließen"-Schritt statt automatisch bei jeder Buchung.
+  Offene Frage: Gleichstand bei den meisten Buchungen (mehrere
+  potenzielle Könige) – alle zahlen? Keiner zahlt? Noch offen. Betrifft
+  `enter-score.tsx` (naheliegender Ort, um Strafen direkt neben den
+  Ergebnissen des Abends zu erfassen) und einen neuen Screen für die
+  Katalog-Verwaltung. Gehört fachlich zu Phase 1/2 (Kegelkasse) bzw.
+  Phase 3 (Strafregeln), siehe Roadmap.
 - **Ergebnisse nachträglich bearbeiten:** `record_game_scores` legt bei
   jedem Aufruf ein neues `game` an; es gibt noch keine Möglichkeit,
   ein bereits erfasstes Ergebnis zu korrigieren oder ein `game` zu
