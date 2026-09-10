@@ -1,12 +1,22 @@
 import { useCallback, useEffect, useState } from 'react';
-import { ActivityIndicator, Pressable, ScrollView, StyleSheet } from 'react-native';
+import { ActivityIndicator, Pressable, ScrollView, StyleSheet, TextInput } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Spacing } from '@/constants/theme';
+import { useTheme } from '@/hooks/use-theme';
 import { getCurrentMember, type CurrentMember } from '@/lib/member';
 import { supabase } from '@/lib/supabase';
+
+type ManualType = 'einzahlung' | 'ausgabe' | 'strafe' | 'gutschrift';
+
+const MANUAL_TYPES: { value: ManualType; label: string }[] = [
+  { value: 'einzahlung', label: 'Einzahlung' },
+  { value: 'ausgabe', label: 'Ausgabe' },
+  { value: 'strafe', label: 'Strafe' },
+  { value: 'gutschrift', label: 'Gutschrift' },
+];
 
 type TransactionRow = {
   id: string;
@@ -41,12 +51,20 @@ function formatEuro(cents: number) {
 }
 
 export default function KasseScreen() {
+  const theme = useTheme();
   const [member, setMember] = useState<CurrentMember | null>(null);
   const [transactions, setTransactions] = useState<TransactionRow[]>([]);
+  const [members, setMembers] = useState<{ id: string; display_name: string }[]>([]);
   const [memberNames, setMemberNames] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
   const [settlingMemberId, setSettlingMemberId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  const [bookingMemberId, setBookingMemberId] = useState<string | null>(null);
+  const [bookingType, setBookingType] = useState<ManualType>('einzahlung');
+  const [bookingAmount, setBookingAmount] = useState('');
+  const [bookingNote, setBookingNote] = useState('');
+  const [booking, setBooking] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -84,6 +102,7 @@ export default function KasseScreen() {
         nameMap[row.id] = row.display_name;
       }
       setMemberNames(nameMap);
+      setMembers(memberRows ?? []);
     }
 
     setTransactions(transactionRows ?? []);
@@ -110,6 +129,44 @@ export default function KasseScreen() {
       return;
     }
 
+    load();
+  }
+
+  async function handleAddBooking() {
+    if (!member) return;
+    if (!bookingMemberId) {
+      setError('Bitte ein Mitglied auswählen.');
+      return;
+    }
+
+    const cents = Math.round(Number(bookingAmount.replace(',', '.')) * 100);
+    if (Number.isNaN(cents) || cents <= 0) {
+      setError('Bitte einen gültigen Betrag angeben.');
+      return;
+    }
+
+    setBooking(true);
+    setError(null);
+
+    const { error: insertError } = await supabase.from('transaction').insert({
+      club_id: member.club_id,
+      member_id: bookingMemberId,
+      type: bookingType,
+      amount_cents: cents,
+      note: bookingNote.trim() || null,
+    });
+
+    setBooking(false);
+
+    if (insertError) {
+      setError(insertError.message);
+      return;
+    }
+
+    setBookingMemberId(null);
+    setBookingType('einzahlung');
+    setBookingAmount('');
+    setBookingNote('');
     load();
   }
 
@@ -176,6 +233,66 @@ export default function KasseScreen() {
             {Object.keys(totalByMember).length === 0 && (
               <ThemedText themeColor="textSecondary">Noch keine Buchungen.</ThemedText>
             )}
+
+            <ThemedView style={styles.bookingSection}>
+              <ThemedText type="smallBold">Buchung erfassen</ThemedText>
+
+              <ThemedView style={styles.chipRow}>
+                {members.map((memberRow) => (
+                  <Pressable
+                    key={memberRow.id}
+                    style={[
+                      styles.chip,
+                      {
+                        backgroundColor:
+                          bookingMemberId === memberRow.id ? theme.backgroundSelected : theme.backgroundElement,
+                      },
+                    ]}
+                    onPress={() => setBookingMemberId(memberRow.id)}>
+                    <ThemedText type="small">{memberRow.display_name}</ThemedText>
+                  </Pressable>
+                ))}
+              </ThemedView>
+
+              <ThemedView style={styles.chipRow}>
+                {MANUAL_TYPES.map((option) => (
+                  <Pressable
+                    key={option.value}
+                    style={[
+                      styles.chip,
+                      { backgroundColor: bookingType === option.value ? theme.backgroundSelected : theme.backgroundElement },
+                    ]}
+                    onPress={() => setBookingType(option.value)}>
+                    <ThemedText type="small">{option.label}</ThemedText>
+                  </Pressable>
+                ))}
+              </ThemedView>
+
+              <TextInput
+                value={bookingAmount}
+                onChangeText={setBookingAmount}
+                placeholder="Betrag in € (z.B. 10.00)"
+                placeholderTextColor={theme.textSecondary}
+                keyboardType="decimal-pad"
+                style={[styles.input, { color: theme.text, backgroundColor: theme.backgroundElement }]}
+              />
+
+              <TextInput
+                value={bookingNote}
+                onChangeText={setBookingNote}
+                placeholder="Notiz (optional)"
+                placeholderTextColor={theme.textSecondary}
+                style={[styles.input, { color: theme.text, backgroundColor: theme.backgroundElement }]}
+              />
+
+              {booking ? (
+                <ActivityIndicator />
+              ) : (
+                <Pressable style={[styles.button, { backgroundColor: theme.backgroundElement }]} onPress={handleAddBooking}>
+                  <ThemedText type="smallBold">Buchung speichern</ThemedText>
+                </Pressable>
+              )}
+            </ThemedView>
           </SafeAreaView>
         </ScrollView>
       </ThemedView>
@@ -257,5 +374,31 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
+  },
+  bookingSection: {
+    gap: Spacing.two,
+    marginTop: Spacing.two,
+  },
+  chipRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: Spacing.two,
+  },
+  chip: {
+    paddingHorizontal: Spacing.three,
+    paddingVertical: Spacing.one,
+    borderRadius: Spacing.two,
+  },
+  input: {
+    height: 48,
+    borderRadius: Spacing.two,
+    paddingHorizontal: Spacing.three,
+    fontSize: 16,
+  },
+  button: {
+    height: 48,
+    borderRadius: Spacing.two,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
 });

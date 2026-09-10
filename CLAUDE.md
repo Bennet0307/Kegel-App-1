@@ -535,7 +535,16 @@ genau wie in `kasse.tsx`.
   zusätzlich "davon offen: X €" wenn nicht alles bezahlt ist; Admin/
   Kassierer haben einen "Als bezahlt markieren"-Button pro Mitglied
   (setzt `paid=true` für alle offenen Buchungen dieses Mitglieds auf
-  einmal – kein Einzel-Toggle pro Buchung).
+  einmal – kein Einzel-Toggle pro Buchung). Admin/Kassierer sehen
+  zusätzlich das Formular "Buchung erfassen": Mitglied (Chip-Auswahl),
+  Typ (Einzahlung/Ausgabe/Strafe/Gutschrift), Betrag, optionale Notiz
+  – speichert direkt per `insert` in `transaction` (keine RPC nötig,
+  reines CRUD über die bereits vorhandene `transaction_write_staff`-
+  Policy) für Fälle außerhalb der automatischen Buchungen (z.B.
+  Bareinzahlung des Jahresbeitrags, Ausgabe für neue Kegel,
+  Ad-hoc-Korrektur). Eine Buchung pro Formular-Absenden, bewusst ohne
+  Sammelbuchungs-Funktion (z.B. "Jahresbeitrag für alle auf einmal")
+  als erste, einfache Version.
 - `kegelclub-app/src/app/club-settings.tsx` – Admin/Kassierer
   bearbeiten `club.kegelgeld_cents` und die Hausnummer-Strafformel-
   Standardwerte (Maximalbetrag, Modus, Reduzierung) direkt in der App
@@ -705,10 +714,6 @@ regulärem Mitglied) gegen die lokale Supabase-Instanz getestet.
   Kalenderjahr oder frei wählbarer Zeitraum über `event.starts_at`)
   wäre ein sinnvoller nächster Ausbauschritt, sobald ein Club über
   mehrere Saisons hinweg Daten angesammelt hat.
-- **Manuelle Kegelkasse-Buchungen:** `transaction_write_staff`
-  erlaubt Admin/Kassierer bereits beliebige Buchungen (Bareinzahlung,
-  Ausgabe, Ad-hoc-Strafe), aber `kasse.tsx` hat noch kein Formular
-  dafür – bisher nur Lesen + die automatische Kegelgeld-Buchung.
 - **UX-Kleinigkeit in `enter-score.tsx`:** die Hunderter/Zehner/Einer-
   Felder haben `maxLength={1}`; um eine bereits gefüllte Ziffer zu
   ändern (z.B. beim Bearbeiten), muss man sie erst leeren
