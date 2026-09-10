@@ -5,6 +5,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Spacing } from '@/constants/theme';
+import { computeKingCrowns } from '@/lib/kingSurcharge';
 import { getCurrentMember } from '@/lib/member';
 import { supabase } from '@/lib/supabase';
 
@@ -71,7 +72,7 @@ export default function StatistikScreen() {
         supabase.from('event').select('id').eq('club_id', clubId),
         supabase
           .from('penalty_rule')
-          .select('id, name')
+          .select('id, name, king_surcharge_cents')
           .eq('club_id', clubId)
           .eq('has_king_surcharge', true),
         supabase.from('club').select('king_surcharge_tie_mode').eq('id', clubId).single(),
@@ -185,32 +186,13 @@ export default function StatistikScreen() {
         | 'keiner_zahlt'
         | 'geteilt';
 
-      const penaltyByEventRule: Record<string, { memberId: string; count: number }[]> = {};
-      for (const row of penaltyRows ?? []) {
-        if (!kingRules.some((rule) => rule.id === row.penalty_rule_id)) continue;
-        const key = `${row.event_id}::${row.penalty_rule_id}`;
-        penaltyByEventRule[key] ??= [];
-        penaltyByEventRule[key].push({ memberId: row.member_id, count: row.count });
-      }
-
+      const crowns = computeKingCrowns(penaltyRows ?? [], kingRules, tieMode);
       const kingTotals: Record<string, { total: number; byRule: Record<string, number> }> = {};
-      for (const [key, rows] of Object.entries(penaltyByEventRule)) {
-        const ruleId = key.split('::')[1];
-        const rule = kingRules.find((r) => r.id === ruleId);
-        if (!rule) continue;
-
-        const maxCount = Math.max(...rows.map((row) => row.count));
-        if (maxCount <= 0) continue;
-
-        const winners = rows.filter((row) => row.count === maxCount);
-        if (winners.length > 1 && tieMode === 'keiner_zahlt') continue;
-
-        for (const winner of winners) {
-          const existing = kingTotals[winner.memberId] ?? { total: 0, byRule: {} };
-          existing.total += 1;
-          existing.byRule[rule.name] = (existing.byRule[rule.name] ?? 0) + 1;
-          kingTotals[winner.memberId] = existing;
-        }
+      for (const crown of crowns) {
+        const existing = kingTotals[crown.memberId] ?? { total: 0, byRule: {} };
+        existing.total += 1;
+        existing.byRule[crown.ruleName] = (existing.byRule[crown.ruleName] ?? 0) + 1;
+        kingTotals[crown.memberId] = existing;
       }
 
       const kingResult: KingEntry[] = Object.entries(kingTotals)

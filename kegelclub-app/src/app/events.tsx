@@ -7,6 +7,7 @@ import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
+import { computeKingCrowns, type TieMode } from '@/lib/kingSurcharge';
 import { getCurrentMember, type CurrentMember } from '@/lib/member';
 import { supabase } from '@/lib/supabase';
 
@@ -35,7 +36,7 @@ type PenaltyResult = {
 
 type KingSurchargeResult = {
   memberId: string;
-  note: string;
+  ruleName: string;
   amountCents: number;
 };
 
@@ -114,7 +115,7 @@ export default function EventsScreen() {
 
     const eventIds = (eventRows ?? []).map((event) => event.id);
 
-    const [{ data: memberRows }, { data: gameRows }, { data: penaltyRows }, { data: kingSurchargeRows }] =
+    const [{ data: memberRows }, { data: gameRows }, { data: penaltyRows }, { data: kingRuleRows }, { data: clubRow }] =
       await Promise.all([
         supabase.from('member').select('id, display_name').eq('club_id', currentMember.club_id),
         eventIds.length > 0
@@ -125,26 +126,24 @@ export default function EventsScreen() {
         eventIds.length > 0
           ? supabase
               .from('penalty')
-              .select('event_id, member_id, rule_name, unit_amount_cents, count')
+              .select('event_id, member_id, penalty_rule_id, rule_name, unit_amount_cents, count')
               .in('event_id', eventIds)
           : Promise.resolve({
               data: [] as {
                 event_id: string;
                 member_id: string;
+                penalty_rule_id: string | null;
                 rule_name: string;
                 unit_amount_cents: number;
                 count: number;
               }[],
             }),
-        eventIds.length > 0
-          ? supabase
-              .from('transaction')
-              .select('event_id, member_id, note, amount_cents')
-              .in('event_id', eventIds)
-              .not('king_surcharge_penalty_rule_id', 'is', null)
-          : Promise.resolve({
-              data: [] as { event_id: string; member_id: string; note: string | null; amount_cents: number }[],
-            }),
+        supabase
+          .from('penalty_rule')
+          .select('id, name, king_surcharge_cents')
+          .eq('club_id', currentMember.club_id)
+          .eq('has_king_surcharge', true),
+        supabase.from('club').select('king_surcharge_tie_mode').eq('id', currentMember.club_id).single(),
       ]);
 
     const nameMap: Record<string, string> = {};
@@ -182,12 +181,13 @@ export default function EventsScreen() {
       ];
     }
 
+    const tieMode = (clubRow?.king_surcharge_tie_mode ?? 'alle_zahlen') as TieMode;
+    const crowns = computeKingCrowns(penaltyRows ?? [], kingRuleRows ?? [], tieMode);
     const kingSurchargeMap: Record<string, KingSurchargeResult[]> = {};
-    for (const row of kingSurchargeRows ?? []) {
-      if (!row.event_id) continue;
-      kingSurchargeMap[row.event_id] = [
-        ...(kingSurchargeMap[row.event_id] ?? []),
-        { memberId: row.member_id, note: row.note ?? '', amountCents: row.amount_cents },
+    for (const crown of crowns) {
+      kingSurchargeMap[crown.eventId] = [
+        ...(kingSurchargeMap[crown.eventId] ?? []),
+        { memberId: crown.memberId, ruleName: crown.ruleName, amountCents: crown.amountCents },
       ];
     }
 
@@ -369,7 +369,8 @@ export default function EventsScreen() {
                   <ThemedView style={styles.resultsBlock}>
                     {(kingSurcharges[event.id] ?? []).map((surcharge, index) => (
                       <ThemedText key={`${surcharge.memberId}-${index}`} type="small">
-                        👑 {memberNames[surcharge.memberId] ?? '?'}: {surcharge.note} ({formatEuro(surcharge.amountCents)})
+                        👑 {memberNames[surcharge.memberId] ?? '?'}: {surcharge.ruleName}-König (
+                        {formatEuro(surcharge.amountCents)})
                       </ThemedText>
                     ))}
                   </ThemedView>
@@ -392,6 +393,13 @@ export default function EventsScreen() {
                     <ThemedText type="link">Strafen erfassen</ThemedText>
                   </Pressable>
                 )}
+
+                <Pressable
+                  onPress={() =>
+                    router.push({ pathname: '/termin-statistik', params: { eventId: event.id } })
+                  }>
+                  <ThemedText type="link">Statistik</ThemedText>
+                </Pressable>
               </ThemedView>
             );
           })}

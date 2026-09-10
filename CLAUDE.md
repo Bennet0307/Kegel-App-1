@@ -36,8 +36,8 @@ Zielplattformen: **Mobile (iOS/Android) und Web**, eine gemeinsame Codebase.
     `src/app/_layout.tsx` ist ein `Stack` mit der `(tabs)`-Gruppe
     sowie `login`, `create-club`, `join-club`, `events`,
     `create-event`, `enter-score`, `kasse`, `club-settings`,
-    `strafenkatalog`, `enter-penalties` und `statistik` als eigenen
-    Screens.
+    `strafenkatalog`, `enter-penalties`, `statistik` und
+    `termin-statistik` als eigenen Screens.
     `enter-score` bedient sowohl Anlegen als auch Bearbeiten (Route-Param
     `gameId` optional), `enter-penalties` erfasst/korrigiert (ebenfalls
     per Replace) die Strafenkatalog-Buchungen eines Termins
@@ -490,10 +490,15 @@ genau wie in `kasse.tsx`.
   Anzahl, Gesamtbetrag); Admins/Kassierer sehen zusätzlich den Link
   "Strafen erfassen" (→ `/enter-penalties` mit `eventId`-Param). Links
   zu "Kegelkasse", "Strafenkatalog" und "Statistik" (für alle
-  Mitglieder sichtbar) stehen oberhalb der Terminliste. Automatische
-  Pumpenkönig-Zuschlag-
-  Buchungen (`transaction.king_surcharge_penalty_rule_id`) werden
-  ebenfalls pro Termin angezeigt (👑-Symbol, Note-Text der Buchung).
+  Mitglieder sichtbar) stehen oberhalb der Terminliste. Pumpenkönig-
+  Krönungen werden ebenfalls pro Termin angezeigt (👑-Symbol,
+  `<Strafart>-König`) – über `computeKingCrowns()` aus `penalty`
+  berechnet, **nicht** aus `transaction` gelesen (siehe
+  `kingSurcharge.ts` unten: ein früherer Bug hier ließ reguläre
+  Mitglieder Krönungen anderer Mitglieder nicht sehen, da
+  `transaction` per RLS auf eigene Buchungen beschränkt ist). Jeder
+  Termin hat außerdem einen Link "Statistik" (für alle Mitglieder
+  sichtbar, → `/termin-statistik` mit `eventId`-Param).
 - `kegelclub-app/src/app/create-event.tsx` – legt einen Kegelabend
   (`event`, `type: 'kegelabend'`) für den eigenen Club an; Datum/
   Uhrzeit aktuell als zwei Text-Felder (`JJJJ-MM-TT` / `HH:MM`), kein
@@ -562,24 +567,44 @@ genau wie in `kasse.tsx`.
   ruft immer `record_event_penalties` (Delete-und-Neu-Buchen, dieselbe
   RPC für Erst- und Korrekturerfassung). Ohne Strafarten im Club zeigt
   die Seite einen Hinweis, zuerst den Strafenkatalog zu befüllen.
-- `kegelclub-app/src/app/statistik.tsx` – Statistik/Ranglisten in vier
-  Abschnitten, alle über die gesamte Vereinshistorie (kein Saison-/
-  Zeitraum-Filter, siehe "Offene Punkte"): **Kegelkasse-Ranking**
-  (Gesamtbetrag je Mitglied absteigend, nur Admin/Kassierer sichtbar,
-  siehe Hinweis oben); **Hausnummer-Bestleistungen** (persönlicher
-  Bestwert je Mitglied und Spielart – höchster Wert bei
-  `grosse_hausnummer`, niedrigster bei `kleine_hausnummer` –, für alle
-  sichtbar); **Teilnahmequote** (Zusage-Quote aus `attendance` vs.
-  tatsächliche Teilnahme = Anteil der Termine mit mindestens einem
-  `score`-Eintrag in irgendeinem Spiel, sortiert nach Teilnahme-Quote);
-  **Strafenkatalog-Rangliste** (Gesamtzahl/-betrag aller
-  `penalty`-Buchungen je Mitglied absteigend, plus "Königs-Bilanz":
-  wie oft war wer schon "`<Strafart>`-König"). Die Königs-Bilanz wird
-  bewusst aus `penalty`/`penalty_rule`/`club.king_surcharge_tie_mode`
-  rekonstruiert statt aus `transaction` gelesen (identisches Ergebnis,
-  aber ohne die RLS-Einschränkung auf eigene Buchungen für reguläre
-  Mitglieder) – siehe Migration 18 für die Gleichstand-Logik, die hier
-  exakt gespiegelt wird.
+- `kegelclub-app/src/app/statistik.tsx` – Club-weite Statistik/
+  Ranglisten in vier Abschnitten, alle über die gesamte
+  Vereinshistorie (kein Saison-/Zeitraum-Filter, siehe "Offene
+  Punkte"): **Kegelkasse-Ranking** (Gesamtbetrag je Mitglied
+  absteigend, nur Admin/Kassierer sichtbar, siehe Hinweis oben);
+  **Hausnummer-Bestleistungen** (persönlicher Bestwert je Mitglied und
+  Spielart – höchster Wert bei `grosse_hausnummer`, niedrigster bei
+  `kleine_hausnummer` –, für alle sichtbar); **Teilnahmequote**
+  (Zusage-Quote aus `attendance` vs. tatsächliche Teilnahme = Anteil
+  der Termine mit mindestens einem `score`-Eintrag in irgendeinem
+  Spiel, sortiert nach Teilnahme-Quote); **Strafenkatalog-Rangliste**
+  (Gesamtzahl/-betrag aller `penalty`-Buchungen je Mitglied
+  absteigend, plus "Königs-Bilanz": wie oft war wer schon
+  "`<Strafart>`-König", über `computeKingCrowns()` berechnet).
+- `kegelclub-app/src/app/termin-statistik.tsx` – dieselbe Idee wie
+  `statistik.tsx`, aber auf **einen einzelnen Termin** beschränkt
+  (Route-Param `eventId`, verlinkt von `events.tsx`), Reihenfolge der
+  Abschnitte: **Anwesenheit** (Zugesagt/Abgesagt/Offen je mit
+  Namensliste – Mitglieder ohne `attendance`-Zeile gelten als
+  "Offen"); **Strafen dieses Abends** (Ranking + "Königs des
+  Abends"); **Kassen-Auswirkung dieses Abends** (nur Admin/Kassierer,
+  analog zum Kegelkasse-Ranking in `statistik.tsx`); **Ergebnisse**
+  je `game` dieses Termins (bewusst zuletzt), bei den Hausnummer-Typen
+  mit Platzierung (1./2./...) sortiert nach Sieg-Richtung, bei
+  `freitext` unsortiert (kein kompetitiver Vergleich).
+- `kegelclub-app/src/lib/kingSurcharge.ts` – `computeKingCrowns()`:
+  gemeinsam genutzte Hilfsfunktion, die Pumpenkönig-Krönungen aus
+  `penalty` + `penalty_rule` (has_king_surcharge/king_surcharge_cents)
+  + `club.king_surcharge_tie_mode` rekonstruiert (alle drei club-weit
+  lesbar) – spiegelt exakt die Gleichstand-Logik aus
+  `record_event_penalties` (Migration 18), liefert aber dasselbe
+  Ergebnis **ohne** `transaction` zu lesen. Bewusst ausgelagert und von
+  `events.tsx`, `statistik.tsx` und `termin-statistik.tsx` gemeinsam
+  genutzt, nachdem `events.tsx` ursprünglich fälschlich direkt aus
+  `transaction` las: `transaction_select_own` beschränkt reguläre
+  Mitglieder dort auf eigene Buchungen, wodurch sie Krönungen anderer
+  Mitglieder nicht sahen (echter RLS-Bug, per Migration nicht nötig zu
+  fixen, da rein clientseitig – siehe Commit-Historie).
 - `kegelclub-app/src/lib/member.ts` – `getCurrentMember()`: liest die
   `member`-Zeile des eingeloggten Users (id, club_id, role,
   display_name). Nimmt aktuell die erste gefundene Zeile – Mitglieder
