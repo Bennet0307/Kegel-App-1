@@ -262,6 +262,10 @@ export default function EventsScreen() {
             <ThemedText type="link">Strafenkatalog</ThemedText>
           </Pressable>
 
+          <Pressable onPress={() => router.push('/statistik')}>
+            <ThemedText type="link">Statistik</ThemedText>
+          </Pressable>
+
           {isStaff && (
             <Pressable onPress={() => router.push('/club-settings')}>
               <ThemedText type="link">Club-Einstellungen</ThemedText>

@@ -36,7 +36,8 @@ Zielplattformen: **Mobile (iOS/Android) und Web**, eine gemeinsame Codebase.
     `src/app/_layout.tsx` ist ein `Stack` mit der `(tabs)`-Gruppe
     sowie `login`, `create-club`, `join-club`, `events`,
     `create-event`, `enter-score`, `kasse`, `club-settings`,
-    `strafenkatalog` und `enter-penalties` als eigenen Screens.
+    `strafenkatalog`, `enter-penalties` und `statistik` als eigenen
+    Screens.
     `enter-score` bedient sowohl Anlegen als auch Bearbeiten (Route-Param
     `gameId` optional), `enter-penalties` erfasst/korrigiert (ebenfalls
     per Replace) die Strafenkatalog-Buchungen eines Termins
@@ -144,6 +145,21 @@ Zielplattformen: **Mobile (iOS/Android) und Web**, eine gemeinsame Codebase.
   - Voraussetzung auf Windows: Docker Desktop mit aktivierter
     Virtualisierung (BIOS/Firmware) und funktionierendem WSL2-Backend
     (`wsl --status` sollte fehlerfrei laufen).
+  - **Bekannter Windows-Gotcha:** Nach Schlafmodus/Docker-Neustart kann
+    Windows die Standard-Supabase-Ports (54320er-Bereich) über einen
+    Hyper-V/WSL2-"excluded port range" blockieren – Docker meldet dann
+    `bind: An attempt was made to access a socket in a way forbidden by
+    its access permissions`, obwohl `netstat` keinen belegenden Prozess
+    zeigt (prüfen mit `netsh interface ipv4 show excludedportrange
+    protocol=tcp`). Der eigentliche Fix (`net stop winnat` / `net start
+    winnat`) braucht Admin-Rechte; als Workaround ohne Admin-Rechte
+    wurden die Ports in `supabase/config.toml` auf den freien Bereich
+    61320–61329 verschoben (API 61321, DB 61322, Studio 61323, SMTP/
+    Mailpit 61324, Analytics 61327, Pooler 61329, Shadow-DB 61320) –
+    `kegelclub-app/.env` entsprechend auf
+    `EXPO_PUBLIC_SUPABASE_URL=http://127.0.0.1:61321` angepasst. Bei
+    `supabase status`/`supabase start` jetzt diese Ports erwarten, nicht
+    mehr die Standard-54320er.
 
 - **Offline-Strategie (später):** lokale SQLite-Lösung für RN
   (z.B. WatermelonDB oder op-sqlite) mit einfacher Sync-Queue
@@ -429,8 +445,19 @@ Liegen in `supabase/migrations/`, chronologisch:
 - `team` / `team_member` – Mannschaften — noch offen
 - `announcement` – Ankündigungen — noch offen
 
-Statistiken/Ranglisten werden als Postgres Views bzw. Funktionen über
-`score`, `penalty`, `attendance` berechnet, nicht clientseitig.
+Statistiken/Ranglisten (`statistik.tsx`) werden entgegen der
+ursprünglichen Planung **clientseitig** aus `score`/`game`/`attendance`/
+`penalty`/`penalty_rule` aggregiert, nicht über Postgres Views – analog
+zum bereits etablierten Muster in `kasse.tsx`/`strafenkatalog.tsx`
+("Gesamtliste"): eine View würde automatisch RLS umgehen (siehe
+Kegelkasse-Hinweis oben) und ist bei den hier verwendeten, ohnehin
+club-weit lesbaren Tabellen (`score`, `game`, `attendance`, `penalty`,
+`penalty_rule` – alle mit "sichtbar für alle Mitglieder desselben
+Clubs"-Policy) auch nicht nötig. Einzige Ausnahme: das
+Kegelkasse-Ranking braucht `transaction`, das per RLS nur Admin/
+Kassierer vollständig sehen (`transaction_select_staff`) – diese
+Sektion ist deshalb clientseitig auf Admin/Kassierer beschränkt,
+genau wie in `kasse.tsx`.
 
 ## App-Code (Stand: erster vertikaler Durchstich)
 
@@ -462,8 +489,9 @@ Statistiken/Ranglisten werden als Postgres Views bzw. Funktionen über
   (`penalty`) werden pro Termin ebenfalls angezeigt (Name der Strafart,
   Anzahl, Gesamtbetrag); Admins/Kassierer sehen zusätzlich den Link
   "Strafen erfassen" (→ `/enter-penalties` mit `eventId`-Param). Links
-  zu "Kegelkasse" und "Strafenkatalog" (für alle Mitglieder sichtbar)
-  stehen oberhalb der Terminliste. Automatische Pumpenkönig-Zuschlag-
+  zu "Kegelkasse", "Strafenkatalog" und "Statistik" (für alle
+  Mitglieder sichtbar) stehen oberhalb der Terminliste. Automatische
+  Pumpenkönig-Zuschlag-
   Buchungen (`transaction.king_surcharge_penalty_rule_id`) werden
   ebenfalls pro Termin angezeigt (👑-Symbol, Note-Text der Buchung).
 - `kegelclub-app/src/app/create-event.tsx` – legt einen Kegelabend
@@ -534,6 +562,24 @@ Statistiken/Ranglisten werden als Postgres Views bzw. Funktionen über
   ruft immer `record_event_penalties` (Delete-und-Neu-Buchen, dieselbe
   RPC für Erst- und Korrekturerfassung). Ohne Strafarten im Club zeigt
   die Seite einen Hinweis, zuerst den Strafenkatalog zu befüllen.
+- `kegelclub-app/src/app/statistik.tsx` – Statistik/Ranglisten in vier
+  Abschnitten, alle über die gesamte Vereinshistorie (kein Saison-/
+  Zeitraum-Filter, siehe "Offene Punkte"): **Kegelkasse-Ranking**
+  (Gesamtbetrag je Mitglied absteigend, nur Admin/Kassierer sichtbar,
+  siehe Hinweis oben); **Hausnummer-Bestleistungen** (persönlicher
+  Bestwert je Mitglied und Spielart – höchster Wert bei
+  `grosse_hausnummer`, niedrigster bei `kleine_hausnummer` –, für alle
+  sichtbar); **Teilnahmequote** (Zusage-Quote aus `attendance` vs.
+  tatsächliche Teilnahme = Anteil der Termine mit mindestens einem
+  `score`-Eintrag in irgendeinem Spiel, sortiert nach Teilnahme-Quote);
+  **Strafenkatalog-Rangliste** (Gesamtzahl/-betrag aller
+  `penalty`-Buchungen je Mitglied absteigend, plus "Königs-Bilanz":
+  wie oft war wer schon "`<Strafart>`-König"). Die Königs-Bilanz wird
+  bewusst aus `penalty`/`penalty_rule`/`club.king_surcharge_tie_mode`
+  rekonstruiert statt aus `transaction` gelesen (identisches Ergebnis,
+  aber ohne die RLS-Einschränkung auf eigene Buchungen für reguläre
+  Mitglieder) – siehe Migration 18 für die Gleichstand-Logik, die hier
+  exakt gespiegelt wird.
 - `kegelclub-app/src/lib/member.ts` – `getCurrentMember()`: liest die
   `member`-Zeile des eingeloggten Users (id, club_id, role,
   display_name). Nimmt aktuell die erste gefundene Zeile – Mitglieder
@@ -579,9 +625,12 @@ regulärem Mitglied) gegen die lokale Supabase-Instanz getestet.
    Gesamtübersicht), ✅ "Pumpenkönig"-Zuschlag (Gleichstand-Verhalten
    als Club-Einstellung). Damit ist der
    MVP-Umfang aus dem ursprünglichen Plan erreicht.
-3. **Phase 2 – Ausbau:** weitere Spieltypen, Statistiken/Ranglisten,
-   Terminplanung mit Push (inkl. Regeltermine/Serien, siehe "Offene
-   Punkte"), Live-Tafelmodus (Realtime).
+3. **Phase 2 – Ausbau:** ✅ Statistiken/Ranglisten (Kegelkasse-Ranking,
+   Hausnummer-Bestleistungen, Teilnahmequote, Strafenkatalog-Rangliste
+   inkl. Königs-Bilanz – über die gesamte Historie, noch ohne Saison-/
+   Zeitraum-Filter, siehe "Offene Punkte"). Noch offen: weitere
+   Spieltypen, Terminplanung mit Push (inkl. Regeltermine/Serien, siehe
+   "Offene Punkte"), Live-Tafelmodus (Realtime).
 4. **Phase 3 – Finanzen & Turniere:** SEPA-XML-Export (Edge Function),
    Beitrags-/Rechnungswesen, Mannschaften/Turniere, Offline-Sync
    ausbauen, App-Store-Release.
@@ -625,6 +674,12 @@ regulärem Mitglied) gegen die lokale Supabase-Instanz getestet.
   `penalty`-Tabellen (z.B. 0,10 €/Minute nach `event.starts_at`), die
   dann als `transaction` in die Kegelkasse einfließt. Gehört fachlich
   zu Phase 1/2 (Kegelkasse) bzw. Phase 3 (Strafregeln), siehe Roadmap.
+- **Statistik-Zeitraum-Filter** (Idee, noch nicht umgesetzt):
+  `statistik.tsx` zeigt aktuell immer die gesamte Vereinshistorie ohne
+  Saison-/Datumsfilter (bewusste erste Version). Ein Filter (z.B.
+  Kalenderjahr oder frei wählbarer Zeitraum über `event.starts_at`)
+  wäre ein sinnvoller nächster Ausbauschritt, sobald ein Club über
+  mehrere Saisons hinweg Daten angesammelt hat.
 - **Manuelle Kegelkasse-Buchungen:** `transaction_write_staff`
   erlaubt Admin/Kassierer bereits beliebige Buchungen (Bareinzahlung,
   Ausgabe, Ad-hoc-Strafe), aber `kasse.tsx` hat noch kein Formular
