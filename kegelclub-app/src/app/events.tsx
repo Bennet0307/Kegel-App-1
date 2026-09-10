@@ -16,6 +16,9 @@ type EventRow = {
   title: string;
   starts_at: string;
   location: string | null;
+  status: string;
+  series_id: string | null;
+  series_overridden: boolean;
 };
 
 type AttendanceStatus = 'offen' | 'zugesagt' | 'abgesagt';
@@ -67,9 +70,12 @@ export default function EventsScreen() {
   const [penalties, setPenalties] = useState<Record<string, PenaltyResult[]>>({});
   const [kingSurcharges, setKingSurcharges] = useState<Record<string, KingSurchargeResult[]>>({});
   const [memberNames, setMemberNames] = useState<Record<string, string>>({});
+  const [seriesActive, setSeriesActive] = useState<Record<string, boolean>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [confirmingGameId, setConfirmingGameId] = useState<string | null>(null);
+  const [confirmingCancelEventId, setConfirmingCancelEventId] = useState<string | null>(null);
+  const [confirmingEndSeriesId, setConfirmingEndSeriesId] = useState<string | null>(null);
 
   const isStaff = member?.role === 'admin' || member?.role === 'kassierer';
 
@@ -85,9 +91,38 @@ export default function EventsScreen() {
     }
     setMember(currentMember);
 
+    const staff = currentMember.role === 'admin' || currentMember.role === 'kassierer';
+
+    // Regeltermine: bei jedem Laden als Staff die nächsten 6 Monate an
+    // Terminen nachziehen, damit Serien nicht "auslaufen", ohne dass
+    // dafür ein separater Cron-Job nötig ist. Idempotent (siehe
+    // generate_series_events), also unbedenklich bei jedem Aufruf.
+    const { data: seriesRows } = await supabase
+      .from('event_series')
+      .select('id, active')
+      .eq('club_id', currentMember.club_id);
+
+    const seriesActiveMap: Record<string, boolean> = {};
+    for (const row of seriesRows ?? []) {
+      seriesActiveMap[row.id] = row.active;
+    }
+    setSeriesActive(seriesActiveMap);
+
+    if (staff) {
+      const activeSeriesIds = (seriesRows ?? []).filter((row) => row.active).map((row) => row.id);
+      if (activeSeriesIds.length > 0) {
+        const until = new Date();
+        until.setMonth(until.getMonth() + 6);
+        const untilDate = until.toISOString().slice(0, 10);
+        await Promise.all(
+          activeSeriesIds.map((id) => supabase.rpc('generate_series_events', { p_series_id: id, p_until: untilDate })),
+        );
+      }
+    }
+
     const { data: eventRows, error: eventsError } = await supabase
       .from('event')
-      .select('id, title, starts_at, location')
+      .select('id, title, starts_at, location, status, series_id, series_overridden')
       .eq('club_id', currentMember.club_id)
       .order('starts_at', { ascending: true });
 
@@ -221,6 +256,35 @@ export default function EventsScreen() {
     }
   }
 
+  async function handleCancelEvent(eventId: string, seriesId: string | null) {
+    setConfirmingCancelEventId(null);
+
+    const { error: updateError } = await supabase
+      .from('event')
+      .update({ status: 'abgesagt', ...(seriesId ? { series_overridden: true } : {}) })
+      .eq('id', eventId);
+
+    if (updateError) {
+      setError(updateError.message);
+      return;
+    }
+
+    load();
+  }
+
+  async function handleEndSeries(seriesId: string) {
+    setConfirmingEndSeriesId(null);
+
+    const { error: updateError } = await supabase.from('event_series').update({ active: false }).eq('id', seriesId);
+
+    if (updateError) {
+      setError(updateError.message);
+      return;
+    }
+
+    load();
+  }
+
   async function handleDeleteGame(gameId: string) {
     setConfirmingGameId(null);
 
@@ -284,14 +348,55 @@ export default function EventsScreen() {
 
           {events.map((event) => {
             const status = attendance[event.id] ?? 'offen';
+            const isCancelled = event.status === 'abgesagt';
             return (
               <ThemedView key={event.id} type="backgroundElement" style={styles.eventCard}>
-                <ThemedText type="smallBold">{event.title}</ThemedText>
+                <ThemedText type="smallBold">
+                  {event.title}
+                  {isCancelled ? ' (abgesagt)' : ''}
+                </ThemedText>
                 <ThemedText type="small" themeColor="textSecondary">
                   {formatDate(event.starts_at)}
                   {event.location ? ` · ${event.location}` : ''}
+                  {!isCancelled && event.series_overridden ? ' · weicht von Serie ab' : ''}
                 </ThemedText>
 
+                {isStaff && (
+                  <ThemedView style={styles.gameActionsRow}>
+                    <Pressable
+                      onPress={() => router.push({ pathname: '/create-event', params: { eventId: event.id } })}>
+                      <ThemedText type="small" themeColor="textSecondary">
+                        Verschieben
+                      </ThemedText>
+                    </Pressable>
+                    {!isCancelled && (
+                      <Pressable
+                        onPress={() =>
+                          confirmingCancelEventId === event.id
+                            ? handleCancelEvent(event.id, event.series_id)
+                            : setConfirmingCancelEventId(event.id)
+                        }>
+                        <ThemedText type="small" style={styles.deleteLink}>
+                          {confirmingCancelEventId === event.id ? 'Wirklich absagen?' : 'Absagen'}
+                        </ThemedText>
+                      </Pressable>
+                    )}
+                    {event.series_id && seriesActive[event.series_id] && (
+                      <Pressable
+                        onPress={() =>
+                          confirmingEndSeriesId === event.series_id
+                            ? handleEndSeries(event.series_id!)
+                            : setConfirmingEndSeriesId(event.series_id)
+                        }>
+                        <ThemedText type="small" style={styles.deleteLink}>
+                          {confirmingEndSeriesId === event.series_id ? 'Serie wirklich beenden?' : 'Serie beenden'}
+                        </ThemedText>
+                      </Pressable>
+                    )}
+                  </ThemedView>
+                )}
+
+                {!isCancelled && (
                 <ThemedView style={styles.rsvpRow}>
                   <Pressable
                     style={[
@@ -310,6 +415,7 @@ export default function EventsScreen() {
                     <ThemedText type="small">Absagen</ThemedText>
                   </Pressable>
                 </ThemedView>
+                )}
 
                 {(results[event.id] ?? []).map((game) => (
                   <ThemedView key={game.gameId} style={styles.resultsBlock}>
@@ -376,7 +482,7 @@ export default function EventsScreen() {
                   </ThemedView>
                 )}
 
-                {isStaff && (
+                {isStaff && !isCancelled && (
                   <Pressable
                     onPress={() =>
                       router.push({ pathname: '/enter-score', params: { eventId: event.id } })
@@ -385,7 +491,7 @@ export default function EventsScreen() {
                   </Pressable>
                 )}
 
-                {isStaff && (
+                {isStaff && !isCancelled && (
                   <Pressable
                     onPress={() =>
                       router.push({ pathname: '/enter-penalties', params: { eventId: event.id } })

@@ -377,13 +377,54 @@ Liegen in `supabase/migrations/`, chronologisch:
     generische "Pumpenkönig"-Name in Doku/UI-Labels bezieht sich nur auf
     das Feature selbst, nicht auf den tatsächlich gebuchten Namen, der
     immer von der jeweiligen Strafart abgeleitet wird.
+20. **`event_series`** – Regeltermine / Serien-Kegelabende (Idee aus
+    "Offene Punkte" umgesetzt). Neue Tabelle `event_series` (club_id,
+    title, location, frequency `'woechentlich'`/`'monatlich'`,
+    interval_weeks, weekday [ISO 1=Montag..7=Sonntag],
+    monthly_occurrence [1-5, "n-ter Wochentag im Monat"], time_of_day,
+    starts_on, active). Neue Spalten auf `event`: `series_id`,
+    `series_occurrence_date` (das ursprünglich geplante Datum dieses
+    Vorkommens, stabil auch wenn `starts_at` später verschoben wird –
+    genau das Ausnahme-Muster wiederkehrender Termine aus Kalender-Apps)
+    und `series_overridden` (Anzeige-Flag: true, wenn dieses Vorkommen
+    manuell verschoben oder abgesagt wurde). Ein partieller Unique-Index
+    auf `(series_id, series_occurrence_date)` sorgt dafür, dass der
+    Generator (`generate_series_events`) ein Vorkommen nie doppelt
+    anlegt, selbst wenn es längst verschoben/abgesagt wurde – er prüft
+    nur gegen `series_occurrence_date`, nie gegen `starts_at`. RPCs:
+    `create_event_series(...)` legt die Serie an und erzeugt sofort die
+    ersten 6 Monate an Terminen; `generate_series_events(p_series_id,
+    p_until)` erzeugt fehlende Vorkommen bis zu einem Stichtag
+    (idempotent, wird bei jedem Laden von `events.tsx` durch Admin/
+    Kassierer erneut mit "heute + 6 Monate" aufgerufen, damit eine Serie
+    nie "ausläuft", ohne dass dafür ein Cron-Job nötig ist). Die
+    monatliche Regel wird nicht über einen separaten Wochentag-/
+    Vorkommen-Picker im Formular abgefragt, sondern aus dem gewählten
+    ersten Termin abgeleitet (z.B. "3. Oktober, ein Freitag" →
+    automatisch "jeden ersten Freitag im Monat") – siehe App-Code.
+    **Zeitzone:** `time_of_day` wird über `AT TIME ZONE 'Europe/Berlin'`
+    in `timestamptz` umgerechnet statt über einen bloßen `::timestamptz`-
+    Cast (der die DB-Session-Zeitzone UTC verwendet hätte und z.B.
+    19:30 Uhr als 19:30 UTC statt 19:30 Uhr Ortszeit gespeichert hätte –
+    ein echter Bug, live im Browser gefunden: Termine erschienen 2h
+    zu spät). `Europe/Berlin` ist damit die einzige von der App
+    unterstützte Zeitzone (kein `tz`-Feld auf `club`), was für dieses
+    Projekt (Region Frankfurt/EU, siehe Tech-Stack) ausreicht.
 
 ## Kern-Datenmodell (Ausgangspunkt, teils noch nicht als Migration umgesetzt)
 
 - `club` – Mandant/Verein (id, name, invite_code, created_at) ✅ umgesetzt
 - `member` – Mitglied (id, club_id, user_id→auth.users, display_name,
   role, joined_at) ✅ umgesetzt
-- `event` – Termin (id, club_id, type, title, starts_at, location, status) ✅ umgesetzt
+- `event` – Termin (id, club_id, type, title, starts_at, location, status,
+  series_id, series_occurrence_date, series_overridden) ✅ umgesetzt.
+  `status` ('geplant'/'abgeschlossen'/'abgesagt') ist seit Migration 20
+  auch tatsächlich in der UI setzbar (Termin absagen). Die drei
+  `series_*`-Spalten verknüpfen einen generierten Termin optional mit
+  seiner Serie (siehe `event_series` unten).
+- `event_series` – Regeltermine/Serien-Kegelabende (id, club_id, title,
+  location, frequency, interval_weeks, weekday, monthly_occurrence,
+  time_of_day, starts_on, active) ✅ umgesetzt (Migration 20).
 - `guest` – Gastkegler ohne Konto — noch offen
 - `attendance` – Zu-/Absage pro Event und Mitglied (id, event_id,
   member_id, status, responded_at) ✅ umgesetzt. Echte "war wirklich
@@ -498,11 +539,40 @@ genau wie in `kasse.tsx`.
   Mitglieder Krönungen anderer Mitglieder nicht sehen, da
   `transaction` per RLS auf eigene Buchungen beschränkt ist). Jeder
   Termin hat außerdem einen Link "Statistik" (für alle Mitglieder
-  sichtbar, → `/termin-statistik` mit `eventId`-Param).
+  sichtbar, → `/termin-statistik` mit `eventId`-Param). Admins/
+  Kassierer sehen pro Termin zusätzlich "Verschieben" (→
+  `/create-event` mit `eventId`-Param, siehe dort), "Absagen" (zwei
+  Taps als Bestätigung, setzt `event.status = 'abgesagt'` direkt per
+  `update` – RLS erlaubt das bereits über `event_write_admin_kassierer`,
+  keine RPC nötig) und, falls der Termin zu einer noch aktiven Serie
+  gehört, "Serie beenden" (setzt `event_series.active = false`, zwei
+  Taps als Bestätigung; stoppt nur künftige Generierung, bestehende
+  Termine bleiben). Ein abgesagter Termin zeigt "(abgesagt)" im Titel
+  und blendet RSVP sowie "Ergebnisse/Strafen erfassen" aus; ein
+  verschobener oder abgesagter Serientermin zeigt zusätzlich "weicht
+  von Serie ab" (`event.series_overridden`). Bei jedem Laden rufen
+  Admins/Kassierer für alle aktiven Serien des Clubs
+  `generate_series_events(seriesId, heute + 6 Monate)` auf, damit eine
+  Serie nie ausläuft (idempotent, siehe Migration 20).
 - `kegelclub-app/src/app/create-event.tsx` – legt einen Kegelabend
   (`event`, `type: 'kegelabend'`) für den eigenen Club an; Datum/
   Uhrzeit aktuell als zwei Text-Felder (`JJJJ-MM-TT` / `HH:MM`), kein
-  Date-Picker-Package eingebunden.
+  Date-Picker-Package eingebunden. Bedient drei Modi über das optionale
+  Router-Param `eventId`: ohne `eventId` und ohne "Regeltermin"-Haken →
+  einzelner Termin (`insert` in `event`); ohne `eventId` mit
+  "Regeltermin"-Haken → ruft `create_event_series` (Frequenz-Umschalter
+  Wöchentlich/Monatlich; bei Wöchentlich zusätzlich "Alle wie viele
+  Wochen?"; bei Monatlich wird Wochentag + n-tes Vorkommen automatisch
+  aus dem gewählten Startdatum abgeleitet, kein eigener Picker nötig –
+  Vorschautext zeigt die abgeleitete Regel an, z.B. "Wiederholt sich
+  jeden ersten Freitag im Monat."); mit `eventId` → bearbeitet einen
+  einzelnen (ggf. generierten) Termin direkt per `update` auf `event`
+  (Titel/Datum/Uhrzeit/Ort) und setzt `series_overridden = true`, falls
+  er zu einer Serie gehört. Beim Laden zum Bearbeiten werden Datum/
+  Uhrzeit bewusst über lokale `Date`-Getter (`getFullYear`/`getHours`/…)
+  statt über `toISOString()` gebildet – letzteres liefert UTC und zeigte
+  im Formular eine falsche (um die Zeitzone verschobene) Uhrzeit an,
+  echter Bug, live im Browser gefunden und gefixt.
 - `kegelclub-app/src/app/enter-score.tsx` – Admin/Kassierer wählen
   Kleine/Große Hausnummer und tragen pro Mitglied drei Ziffern
   (Hunderter/Zehner/Einer) ein, die zur 3-stelligen Hausnummer
@@ -662,9 +732,10 @@ regulärem Mitglied) gegen die lokale Supabase-Instanz getestet.
 3. **Phase 2 – Ausbau:** ✅ Statistiken/Ranglisten (Kegelkasse-Ranking,
    Hausnummer-Bestleistungen, Teilnahmequote, Strafenkatalog-Rangliste
    inkl. Königs-Bilanz – über die gesamte Historie, noch ohne Saison-/
-   Zeitraum-Filter, siehe "Offene Punkte"). Noch offen: weitere
-   Spieltypen, Terminplanung mit Push (inkl. Regeltermine/Serien, siehe
-   "Offene Punkte"), Live-Tafelmodus (Realtime).
+   Zeitraum-Filter, siehe "Offene Punkte"), ✅ Regeltermine/Serien-
+   Kegelabende (wöchentlich/monatlich, mit Verschieben/Absagen einzelner
+   Vorkommen und "Serie beenden"). Noch offen: weitere Spieltypen,
+   Terminplanung mit Push, Live-Tafelmodus (Realtime).
 4. **Phase 3 – Finanzen & Turniere:** SEPA-XML-Export (Edge Function),
    Beitrags-/Rechnungswesen, Mannschaften/Turniere, Offline-Sync
    ausbauen, App-Store-Release.
@@ -685,16 +756,6 @@ regulärem Mitglied) gegen die lokale Supabase-Instanz getestet.
 
 ## Offene Punkte / noch nicht entschieden
 
-- **Regeltermine / Serien-Kegelabende** (Idee, noch nicht umgesetzt):
-  Wiederkehrende Termine konfigurierbar machen, z.B. "monatlich, erster
-  Freitag im Monat". Zusätzlich sollen einzelne Termine der Serie
-  nachträglich verschoben oder abgesagt werden können, ohne die
-  restliche Serie zu beeinflussen (Ausnahmen/Exceptions pro Termin,
-  ähnlich wiederkehrenden Terminen in Kalender-Apps: eine
-  Wiederholungsregel + pro `event` optional ein Verweis auf die
-  erzeugende Serie und ein "abweicht von Serie"-Flag). Betrifft
-  `event` (siehe Kern-Datenmodell) und die Screens `events.tsx` /
-  `create-event.tsx`. Gehört in Phase 2 (Terminplanung), siehe Roadmap.
 - **Einchecken / Ankunftszeit erfassen** (Idee, noch nicht umgesetzt):
   Zusätzlich zur Zu-/Absage (bereits in `attendance` umgesetzt) die
   tatsächliche Ankunftszeit am Kegelabend festhalten – entweder
