@@ -37,6 +37,7 @@ export default function CreateEventScreen() {
   const [isSeries, setIsSeries] = useState(false);
   const [frequency, setFrequency] = useState<Frequency>('woechentlich');
   const [intervalWeeks, setIntervalWeeks] = useState('1');
+  const [lastWeekdayOfMonth, setLastWeekdayOfMonth] = useState(false);
   const [seriesId, setSeriesId] = useState<string | null>(null);
   const [loading, setLoading] = useState(isEditing);
   const [saving, setSaving] = useState(false);
@@ -140,7 +141,7 @@ export default function CreateEventScreen() {
     }
 
     const weekday = isoWeekday(startsAt);
-    const monthlyOccurrence = Math.min(5, Math.ceil(startsAt.getDate() / 7));
+    const monthlyOccurrence = lastWeekdayOfMonth ? -1 : Math.min(5, Math.ceil(startsAt.getDate() / 7));
 
     const { error: rpcError } = await supabase.rpc('create_event_series', {
       p_title: title,
@@ -250,12 +251,27 @@ export default function CreateEventScreen() {
                     style={[styles.input, { color: theme.text, backgroundColor: theme.backgroundElement }]}
                   />
                 ) : (
-                  previewValid && (
-                    <ThemedText type="small" themeColor="textSecondary">
-                      Wiederholt sich jeden {OCCURRENCE_NAMES[Math.min(5, Math.ceil(startsAtPreview!.getDate() / 7))]}{' '}
-                      {WEEKDAY_NAMES[isoWeekday(startsAtPreview!)]} im Monat.
-                    </ThemedText>
-                  )
+                  <>
+                    <Pressable style={styles.checkboxRow} onPress={() => setLastWeekdayOfMonth((prev) => !prev)}>
+                      <ThemedView
+                        style={[
+                          styles.checkbox,
+                          { backgroundColor: lastWeekdayOfMonth ? theme.backgroundSelected : theme.backgroundElement },
+                        ]}
+                      />
+                      <ThemedText type="small">Letzter Wochentag im Monat (statt n-tes Vorkommen)</ThemedText>
+                    </Pressable>
+
+                    {previewValid && (
+                      <ThemedText type="small" themeColor="textSecondary">
+                        Wiederholt sich jeden{' '}
+                        {lastWeekdayOfMonth
+                          ? 'letzten'
+                          : OCCURRENCE_NAMES[Math.min(5, Math.ceil(startsAtPreview!.getDate() / 7))]}{' '}
+                        {WEEKDAY_NAMES[isoWeekday(startsAtPreview!)]} im Monat.
+                      </ThemedText>
+                    )}
+                  </>
                 )}
               </>
             )}

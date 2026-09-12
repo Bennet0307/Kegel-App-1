@@ -381,7 +381,8 @@ Liegen in `supabase/migrations/`, chronologisch:
     "Offene Punkte" umgesetzt). Neue Tabelle `event_series` (club_id,
     title, location, frequency `'woechentlich'`/`'monatlich'`,
     interval_weeks, weekday [ISO 1=Montag..7=Sonntag],
-    monthly_occurrence [1-5, "n-ter Wochentag im Monat"], time_of_day,
+    monthly_occurrence [1-5 = "n-ter Wochentag im Monat", oder -1 =
+    "letzter Wochentag im Monat", siehe Migration 22], time_of_day,
     starts_on, active). Neue Spalten auf `event`: `series_id`,
     `series_occurrence_date` (das ursprünglich geplante Datum dieses
     Vorkommens, stabil auch wenn `starts_at` später verschoben wird –
@@ -432,6 +433,21 @@ Liegen in `supabase/migrations/`, chronologisch:
     bestehen und wird nicht neu generiert) die richtige Wahl; "Löschen"
     eignet sich für Einzeltermine oder Terminserien, die zuvor über
     "Serie beenden" gestoppt wurden.
+22. **`event_series_last_weekday`** – reagiert auf eine Nutzerfrage
+    ("geht auch jeder letzter Freitag im Monat?"): Die bisherige
+    Ableitung von `monthly_occurrence` als reines "n-tes Vorkommen"
+    (1–5) konnte "letzter Wochentag im Monat" nicht korrekt abbilden –
+    nicht jeder Monat hat ein 5. Vorkommen eines Wochentags, und ein
+    als "5." gespeicherter Monat wäre in jedem 4-Vorkommen-Monat (z.B.
+    November/Dezember 2026 mit nur 4 Freitagen) komplett übersprungen
+    worden, statt trotzdem am letzten Freitag stattzufinden. Neuer,
+    eigener Modus `monthly_occurrence = -1` = "letztes Vorkommen im
+    Monat": `generate_series_events` läuft dafür vom Monatsletzten
+    rückwärts zum passenden Wochentag statt vorwärts vom Monatsersten –
+    dadurch garantiert genau ein Treffer in jedem Monat, unabhängig
+    davon, ob der Wochentag darin 4× oder 5× vorkommt. Live im Browser
+    über 7 Monate verifiziert (30.10./27.11./25.12./29.01./26.02./
+    26.03./30.04. – alle korrekt, keine Lücke in den 4-Freitag-Monaten).
 
 ## Kern-Datenmodell (Ausgangspunkt, teils noch nicht als Migration umgesetzt)
 
@@ -588,10 +604,16 @@ genau wie in `kasse.tsx`.
   einzelner Termin (`insert` in `event`); ohne `eventId` mit
   "Regeltermin"-Haken → ruft `create_event_series` (Frequenz-Umschalter
   Wöchentlich/Monatlich; bei Wöchentlich zusätzlich "Alle wie viele
-  Wochen?"; bei Monatlich wird Wochentag + n-tes Vorkommen automatisch
-  aus dem gewählten Startdatum abgeleitet, kein eigener Picker nötig –
-  Vorschautext zeigt die abgeleitete Regel an, z.B. "Wiederholt sich
-  jeden ersten Freitag im Monat."); mit `eventId` → bearbeitet einen
+  Wochen?"; bei Monatlich wird der Wochentag automatisch aus dem
+  gewählten Startdatum abgeleitet (kein eigener Wochentag-Picker
+  nötig), das Vorkommen im Monat ist standardmäßig ebenfalls abgeleitet
+  ("n-tes Vorkommen"), per zusätzlicher Checkbox "Letzter Wochentag im
+  Monat" aber auf den eigenen Modus `monthly_occurrence = -1`
+  umschaltbar (für "jeden letzten Freitag im Monat" o.ä., siehe
+  Migration 22 – ohne diesen Modus würde ein als "5." abgeleiteter
+  Monat in jedem 4-Vorkommen-Monat übersprungen). Vorschautext zeigt
+  die abgeleitete Regel an, z.B. "Wiederholt sich jeden ersten Freitag
+  im Monat." bzw. "…jeden letzten Freitag im Monat."); mit `eventId` → bearbeitet einen
   einzelnen (ggf. generierten) Termin direkt per `update` auf `event`
   (Titel/Datum/Uhrzeit/Ort) und setzt `series_overridden = true`, falls
   er zu einer Serie gehört. Beim Laden zum Bearbeiten werden Datum/
