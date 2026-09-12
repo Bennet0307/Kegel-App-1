@@ -410,6 +410,28 @@ Liegen in `supabase/migrations/`, chronologisch:
     zu spät). `Europe/Berlin` ist damit die einzige von der App
     unterstützte Zeitzone (kein `tz`-Feld auf `club`), was für dieses
     Projekt (Region Frankfurt/EU, siehe Tech-Stack) ausreicht.
+21. **`delete_event`** – Termine löschen. `game`, `attendance` und
+    `penalty` hängen bereits per `on delete cascade` an `event`, aber
+    `transaction.event_id` ist bewusst `on delete set null` (Migration
+    9) – ein reines `delete from event` hätte deshalb verwaiste, aber
+    weiterhin gültige Kegelgeld-/Strafe-/Pumpenkönig-Buchungen
+    zurückgelassen, die in der Kasse fälschlich weiterzählen (dieselbe
+    Klasse Bug wie beim ursprünglichen `delete_game`, siehe Migration
+    11). Neue security-definer RPC `delete_event(p_event_id)` löscht
+    deshalb zuerst explizit alle `transaction`-Zeilen mit diesem
+    `event_id`, danach das `event` selbst (Rest kaskadiert). Nur Admin/
+    Kassierer. **Bekannte Einschränkung bei Serienterminen:** Löschen
+    entfernt nur die Zeile – da `generate_series_events` beim nächsten
+    Lauf ausschließlich prüft, ob für ein `series_occurrence_date`
+    bereits eine Zeile existiert (nicht, ob sie zuvor gelöscht wurde),
+    kann ein gelöschter Serientermin beim nächsten Laden durch
+    Admin/Kassierer erneut erzeugt werden, solange die Serie noch aktiv
+    ist und das Datum innerhalb des 6-Monats-Horizonts liegt. Für einen
+    einzelnen Serientermin, der dauerhaft verschwinden soll, ist
+    "Absagen" (setzt `status='abgesagt'`, bleibt aber als Zeile
+    bestehen und wird nicht neu generiert) die richtige Wahl; "Löschen"
+    eignet sich für Einzeltermine oder Terminserien, die zuvor über
+    "Serie beenden" gestoppt wurden.
 
 ## Kern-Datenmodell (Ausgangspunkt, teils noch nicht als Migration umgesetzt)
 
@@ -553,7 +575,11 @@ genau wie in `kasse.tsx`.
   von Serie ab" (`event.series_overridden`). Bei jedem Laden rufen
   Admins/Kassierer für alle aktiven Serien des Clubs
   `generate_series_events(seriesId, heute + 6 Monate)` auf, damit eine
-  Serie nie ausläuft (idempotent, siehe Migration 20).
+  Serie nie ausläuft (idempotent, siehe Migration 20). Admins/
+  Kassierer sehen außerdem "Löschen" (zwei Taps als Bestätigung, ruft
+  die RPC `delete_event` – entfernt den Termin inkl. aller zugehörigen
+  Kassenbuchungen, siehe Migration 21 für die bekannte Einschränkung
+  bei aktiven Serienterminen).
 - `kegelclub-app/src/app/create-event.tsx` – legt einen Kegelabend
   (`event`, `type: 'kegelabend'`) für den eigenen Club an; Datum/
   Uhrzeit aktuell als zwei Text-Felder (`JJJJ-MM-TT` / `HH:MM`), kein
@@ -756,6 +782,26 @@ regulärem Mitglied) gegen die lokale Supabase-Instanz getestet.
 
 ## Offene Punkte / noch nicht entschieden
 
+- **Termine archivieren** (Idee, noch nicht umgesetzt): alte/vergangene
+  Kegelabende aus der Standard-Terminliste in `events.tsx` ausblenden
+  (nicht löschen – historische Daten für `kasse.tsx`/`statistik.tsx`/
+  `termin-statistik.tsx` bleiben unverändert erhalten, die aggregieren
+  ohnehin über die gesamte Historie unabhängig von einem Archiv-Status).
+  Zusätzlich zur manuellen Variante (Button "Archivieren" pro Termin)
+  die Idee eines **automatischen** Archivierens über eine neue
+  Club-Einstellung, z.B. `club.auto_archive_days` (nullable integer):
+  Termine, deren `starts_at` mehr als X Tage zurückliegt, würden dann
+  automatisch als archiviert gelten. Naheliegendste, aufwandsärmste
+  Umsetzung: **rein clientseitig zur Anzeigezeit** berechnen (in
+  `events.tsx` einfach `starts_at < now() - auto_archive_days`
+  herausfiltern, mit einem Umschalter "Archivierte Termine anzeigen"),
+  statt eine geschriebene `archived`-Spalte + Cron-Job/Edge-Function zu
+  pflegen – kein Hintergrundjob nötig, und die Grenze lässt sich
+  jederzeit ändern, ohne bestehende Zeilen migrieren zu müssen. Eine
+  manuelle Archivierung einzelner (noch nicht alter) Termine bräuchte
+  dagegen doch eine echte Spalte (z.B. `event.archived_at`), da sie
+  nicht aus `starts_at` ableitbar ist. Gehört fachlich zu Phase 2
+  (Terminplanung), siehe Roadmap.
 - **Einchecken / Ankunftszeit erfassen** (Idee, noch nicht umgesetzt):
   Zusätzlich zur Zu-/Absage (bereits in `attendance` umgesetzt) die
   tatsächliche Ankunftszeit am Kegelabend festhalten – entweder

@@ -76,6 +76,7 @@ export default function EventsScreen() {
   const [confirmingGameId, setConfirmingGameId] = useState<string | null>(null);
   const [confirmingCancelEventId, setConfirmingCancelEventId] = useState<string | null>(null);
   const [confirmingEndSeriesId, setConfirmingEndSeriesId] = useState<string | null>(null);
+  const [confirmingDeleteEventId, setConfirmingDeleteEventId] = useState<string | null>(null);
 
   const isStaff = member?.role === 'admin' || member?.role === 'kassierer';
 
@@ -285,6 +286,19 @@ export default function EventsScreen() {
     load();
   }
 
+  async function handleDeleteEvent(eventId: string) {
+    setConfirmingDeleteEventId(null);
+
+    const { error: deleteError } = await supabase.rpc('delete_event', { p_event_id: eventId });
+
+    if (deleteError) {
+      setError(deleteError.message);
+      return;
+    }
+
+    load();
+  }
+
   async function handleDeleteGame(gameId: string) {
     setConfirmingGameId(null);
 
@@ -393,6 +407,16 @@ export default function EventsScreen() {
                         </ThemedText>
                       </Pressable>
                     )}
+                    <Pressable
+                      onPress={() =>
+                        confirmingDeleteEventId === event.id
+                          ? handleDeleteEvent(event.id)
+                          : setConfirmingDeleteEventId(event.id)
+                      }>
+                      <ThemedText type="small" style={styles.deleteLink}>
+                        {confirmingDeleteEventId === event.id ? 'Wirklich löschen?' : 'Löschen'}
+                      </ThemedText>
+                    </Pressable>
                   </ThemedView>
                 )}
 
