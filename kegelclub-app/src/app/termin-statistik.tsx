@@ -53,6 +53,7 @@ export default function TerminStatistikScreen() {
     abgesagt: [],
     offen: [],
   });
+  const [checkedInAt, setCheckedInAt] = useState<Record<string, string>>({});
   const [gameRankings, setGameRankings] = useState<GameRanking[]>([]);
   const [penaltyRanking, setPenaltyRanking] = useState<PenaltyEntry[]>([]);
   const [kingEntries, setKingEntries] = useState<KingEntry[]>([]);
@@ -91,7 +92,7 @@ export default function TerminStatistikScreen() {
       ] = await Promise.all([
         supabase.from('event').select('title').eq('id', eventId).single(),
         supabase.from('member').select('id, display_name').eq('club_id', clubId),
-        supabase.from('attendance').select('member_id, status').eq('event_id', eventId),
+        supabase.from('attendance').select('member_id, status, checked_in_at').eq('event_id', eventId),
         supabase.from('game').select('id, type, description').eq('event_id', eventId),
         supabase
           .from('penalty')
@@ -113,8 +114,10 @@ export default function TerminStatistikScreen() {
 
       // -- Anwesenheit: alle Mitglieder ohne Attendance-Zeile sind "offen" --
       const statusByMember: Record<string, AttendanceStatus> = {};
+      const checkedInMap: Record<string, string> = {};
       for (const row of attendanceRows ?? []) {
         statusByMember[row.member_id] = row.status as AttendanceStatus;
+        if (row.checked_in_at) checkedInMap[row.member_id] = row.checked_in_at;
       }
       const groups: Record<AttendanceStatus, string[]> = { zugesagt: [], abgesagt: [], offen: [] };
       for (const row of memberRows ?? []) {
@@ -122,6 +125,7 @@ export default function TerminStatistikScreen() {
         groups[status].push(row.id);
       }
       setAttendanceGroups(groups);
+      setCheckedInAt(checkedInMap);
 
       // -- Ergebnisse je Spiel, geordnet nach Platzierung --
       const gameIds = (gameRows ?? []).map((row) => row.id);
@@ -182,6 +186,14 @@ export default function TerminStatistikScreen() {
     })();
   }, [eventId]);
 
+  function formatMemberWithCheckIn(memberId: string) {
+    const name = memberNames[memberId] ?? '?';
+    const checkIn = checkedInAt[memberId];
+    if (!checkIn) return name;
+    const time = new Date(checkIn).toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' });
+    return `${name} (✓ ${time})`;
+  }
+
   if (loading) {
     return (
       <ThemedView style={styles.container}>
@@ -206,15 +218,15 @@ export default function TerminStatistikScreen() {
             <ThemedText type="smallBold">Anwesenheit</ThemedText>
             <ThemedText type="small">
               Zugesagt ({attendanceGroups.zugesagt.length}):{' '}
-              {attendanceGroups.zugesagt.map((id) => memberNames[id] ?? '?').join(', ') || '—'}
+              {attendanceGroups.zugesagt.map((id) => formatMemberWithCheckIn(id)).join(', ') || '—'}
             </ThemedText>
             <ThemedText type="small">
               Abgesagt ({attendanceGroups.abgesagt.length}):{' '}
-              {attendanceGroups.abgesagt.map((id) => memberNames[id] ?? '?').join(', ') || '—'}
+              {attendanceGroups.abgesagt.map((id) => formatMemberWithCheckIn(id)).join(', ') || '—'}
             </ThemedText>
             <ThemedText type="small">
               Offen ({attendanceGroups.offen.length}):{' '}
-              {attendanceGroups.offen.map((id) => memberNames[id] ?? '?').join(', ') || '—'}
+              {attendanceGroups.offen.map((id) => formatMemberWithCheckIn(id)).join(', ') || '—'}
             </ThemedText>
           </ThemedView>
 

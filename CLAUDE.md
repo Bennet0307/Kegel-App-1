@@ -36,8 +36,8 @@ Zielplattformen: **Mobile (iOS/Android) und Web**, eine gemeinsame Codebase.
     `src/app/_layout.tsx` ist ein `Stack` mit der `(tabs)`-Gruppe
     sowie `login`, `create-club`, `join-club`, `events`,
     `create-event`, `enter-score`, `kasse`, `club-settings`,
-    `strafenkatalog`, `enter-penalties`, `statistik` und
-    `termin-statistik` als eigenen Screens.
+    `strafenkatalog`, `enter-penalties`, `statistik`,
+    `termin-statistik` und `check-in` als eigenen Screens.
     `enter-score` bedient sowohl Anlegen als auch Bearbeiten (Route-Param
     `gameId` optional), `enter-penalties` erfasst/korrigiert (ebenfalls
     per Replace) die Strafenkatalog-Buchungen eines Termins
@@ -448,27 +448,62 @@ Liegen in `supabase/migrations/`, chronologisch:
     davon, ob der Wochentag darin 4× oder 5× vorkommt. Live im Browser
     über 7 Monate verifiziert (30.10./27.11./25.12./29.01./26.02./
     26.03./30.04. – alle korrekt, keine Lücke in den 4-Freitag-Monaten).
-
-## Kern-Datenmodell (Ausgangspunkt, teils noch nicht als Migration umgesetzt)
+23. **`event_archiving`** – Termine archivieren (Idee aus "Offene
+    Punkte" umgesetzt), zwei Mechanismen, beide rein clientseitig
+    ausgewertet (kein Cron-Job/Edge-Function nötig): (1) manuell über
+    neue Spalte `event.archived_at` (Button "Archivieren"/"Aus Archiv
+    holen" pro Termin); (2) automatisch über neue Spalte
+    `club.auto_archive_days` (nullable integer, Club-Einstellung) – ist
+    sie gesetzt, gilt ein Termin automatisch als archiviert, sobald
+    `starts_at` länger als so viele Tage zurückliegt, ganz ohne dass
+    dafür `archived_at` geschrieben werden müsste (spart eine
+    geschriebene Spalte + Job; die Grenze lässt sich jederzeit ändern,
+    ohne bestehende Zeilen zu migrieren). Archivierte Termine
+    verschwinden standardmäßig aus der Terminliste in `events.tsx`
+    (historische Daten in `kasse.tsx`/`statistik.tsx`/
+    `termin-statistik.tsx` bleiben unverändert, die aggregieren
+    unabhängig vom Archiv-Status), ein Umschalter "Archivierte Termine
+    anzeigen" blendet sie wieder ein. Live im Browser mit beiden
+    Mechanismen getestet: manuelles Archivieren/Aus-Archiv-holen sowie
+    automatisches Ausblenden allein durch `club.auto_archive_days`
+    (verifiziert per psql, dass `archived_at` dabei `null` bleibt).
+24. **`check_in`** – Einchecken/Ankunftszeit erfassen (Idee aus "Offene
+    Punkte" umgesetzt, Grundfunktion ohne automatische
+    Verspätungsstrafe – bewusst auf Nutzerwunsch zurückgestellt, bleibt
+    als eigener nächster Schritt offen). Neue Spalte
+    `attendance.checked_in_at timestamptz`, getrennt von `status`
+    (Zu-/Absage), damit z.B. ein "zugesagtes" Mitglied trotzdem nicht
+    erscheinen kann oder jemand spontan ohne vorherige Zusage einchecken
+    kann. Einchecken funktioniert sowohl als Self-Check-in (jedes
+    Mitglied für sich selbst) als auch durch Admin/Kassierer für
+    beliebige Mitglieder des Clubs (z.B. am Tisch für wen ohne
+    Smartphone) – dafür brauchte es eine neue Policy
+    `attendance_write_staff` (auf `attendance` gab es bisher nur
+    `attendance_write_own`, keinerlei Staff-Schreibrecht). Kein RPC
+    nötig, reines `upsert` auf `attendance` (`onConflict:
+    'event_id,member_id'`), RLS regelt die Berechtigung.
+ (Ausgangspunkt, teils noch nicht als Migration umgesetzt)
 
 - `club` – Mandant/Verein (id, name, invite_code, created_at) ✅ umgesetzt
 - `member` – Mitglied (id, club_id, user_id→auth.users, display_name,
   role, joined_at) ✅ umgesetzt
 - `event` – Termin (id, club_id, type, title, starts_at, location, status,
-  series_id, series_occurrence_date, series_overridden) ✅ umgesetzt.
-  `status` ('geplant'/'abgeschlossen'/'abgesagt') ist seit Migration 20
-  auch tatsächlich in der UI setzbar (Termin absagen). Die drei
-  `series_*`-Spalten verknüpfen einen generierten Termin optional mit
-  seiner Serie (siehe `event_series` unten).
+  series_id, series_occurrence_date, series_overridden, archived_at)
+  ✅ umgesetzt. `status` ('geplant'/'abgeschlossen'/'abgesagt') ist seit
+  Migration 20 auch tatsächlich in der UI setzbar (Termin absagen). Die
+  drei `series_*`-Spalten verknüpfen einen generierten Termin optional
+  mit seiner Serie (siehe `event_series` unten). `archived_at`
+  (Migration 23) trackt manuelles Archivieren; `club.auto_archive_days`
+  steuert zusätzlich automatisches Archivieren nach Alter, siehe
+  Migration 23.
 - `event_series` – Regeltermine/Serien-Kegelabende (id, club_id, title,
   location, frequency, interval_weeks, weekday, monthly_occurrence,
   time_of_day, starts_on, active) ✅ umgesetzt (Migration 20).
 - `guest` – Gastkegler ohne Konto — noch offen
 - `attendance` – Zu-/Absage pro Event und Mitglied (id, event_id,
-  member_id, status, responded_at) ✅ umgesetzt. Echte "war wirklich
-  da"-Anwesenheitserfassung (Check-in am Kegelabend selbst, unabhängig
-  von der Zusage) ist bewusst noch nicht Teil dieser Tabelle — noch
-  offen, siehe unten.
+  member_id, status, responded_at, checked_in_at) ✅ umgesetzt. Die
+  echte "war wirklich da"-Anwesenheitserfassung ist seit Migration 24
+  über `checked_in_at` (unabhängig von `status`) ebenfalls umgesetzt.
 - `game` – ein gespieltes Spiel pro Event (id, club_id, event_id, type,
   description, penalty_max_cents, penalty_mode, penalty_step_cents,
   penalty_step_percent) ✅ umgesetzt. Drei Spieltypen: `kleine_hausnummer`/
@@ -595,7 +630,25 @@ genau wie in `kasse.tsx`.
   Kassierer sehen außerdem "Löschen" (zwei Taps als Bestätigung, ruft
   die RPC `delete_event` – entfernt den Termin inkl. aller zugehörigen
   Kassenbuchungen, siehe Migration 21 für die bekannte Einschränkung
-  bei aktiven Serienterminen).
+  bei aktiven Serienterminen). Ein Umschalter "Archivierte Termine
+  anzeigen" oben in der Liste blendet archivierte Termine ein/aus
+  (`isEventArchived()`: `event.archived_at` gesetzt ODER
+  `club.auto_archive_days` überschritten, siehe Migration 23); pro
+  Termin zusätzlich "Archivieren"/"Aus Archiv holen" (direktes `update`
+  auf `event.archived_at`, keine RPC nötig). Ein archivierter Termin
+  zeigt "(archiviert)" im Titel. In der RSVP-Zeile gibt es zusätzlich
+  einen dritten Button "Einchecken" (Self-Check-in, setzt
+  `attendance.checked_in_at` per `upsert`, zeigt danach "Eingecheckt
+  HH:MM"); für Admin/Kassierer zusätzlich der Link "Anwesenheit
+  erfassen" (→ `/check-in` mit `eventId`-Param, siehe dort) zum
+  Einchecken anderer Mitglieder.
+- `kegelclub-app/src/app/check-in.tsx` – Admin/Kassierer sehen alle
+  Mitglieder des Clubs mit RSVP-Status und einem Einchecken/
+  Rückgängig-Toggle pro Mitglied für den gegebenen Termin (Route-Param
+  `eventId`) – ermöglicht Einchecken für Mitglieder ohne eigenes
+  Smartphone am Tisch. Reines `upsert` auf `attendance`, keine RPC
+  (siehe Migration 24 für die dafür nötige `attendance_write_staff`-
+  Policy).
 - `kegelclub-app/src/app/create-event.tsx` – legt einen Kegelabend
   (`event`, `type: 'kegelabend'`) für den eigenen Club an; Datum/
   Uhrzeit aktuell als zwei Text-Felder (`JJJJ-MM-TT` / `HH:MM`), kein
@@ -672,8 +725,10 @@ genau wie in `kasse.tsx`.
   selbst gespeichert wird statt eines Overrides für ein einzelnes
   Spiel. Zusätzlich `club.king_surcharge_tie_mode` (Migration 18): drei
   Buttons "Alle zahlen"/"Keiner zahlt"/"Zuschlag wird geteilt" für das
-  Gleichstand-Verhalten des Pumpenkönig-Zuschlags. Verlinkt von
-  `events.tsx` (nur für Admin/Kassierer sichtbar).
+  Gleichstand-Verhalten des Pumpenkönig-Zuschlags. Zusätzlich
+  `club.auto_archive_days` (Migration 23): Zahlenfeld "Termine
+  automatisch archivieren nach (Tage, leer = deaktiviert)". Verlinkt
+  von `events.tsx` (nur für Admin/Kassierer sichtbar).
 - `kegelclub-app/src/app/strafenkatalog.tsx` – Verwaltung des freien
   Strafenkatalogs: alle Mitglieder sehen die Liste der `penalty_rule`-
   Einträge (Name + Betrag) sowie die "Gesamtliste" (Summe Anzahl/Betrag
@@ -712,8 +767,9 @@ genau wie in `kasse.tsx`.
   `statistik.tsx`, aber auf **einen einzelnen Termin** beschränkt
   (Route-Param `eventId`, verlinkt von `events.tsx`), Reihenfolge der
   Abschnitte: **Anwesenheit** (Zugesagt/Abgesagt/Offen je mit
-  Namensliste – Mitglieder ohne `attendance`-Zeile gelten als
-  "Offen"); **Strafen dieses Abends** (Ranking + "Königs des
+  Namensliste – Mitglieder ohne `attendance`-Zeile gelten als "Offen";
+  eingecheckte Mitglieder zeigen zusätzlich "(✓ HH:MM)" hinter dem
+  Namen, siehe Migration 24); **Strafen dieses Abends** (Ranking + "Königs des
   Abends"); **Kassen-Auswirkung dieses Abends** (nur Admin/Kassierer,
   analog zum Kegelkasse-Ranking in `statistik.tsx`); **Ergebnisse**
   je `game` dieses Termins (bewusst zuletzt), bei den Hausnummer-Typen
@@ -782,8 +838,11 @@ regulärem Mitglied) gegen die lokale Supabase-Instanz getestet.
    inkl. Königs-Bilanz – über die gesamte Historie, noch ohne Saison-/
    Zeitraum-Filter, siehe "Offene Punkte"), ✅ Regeltermine/Serien-
    Kegelabende (wöchentlich/monatlich, mit Verschieben/Absagen einzelner
-   Vorkommen und "Serie beenden"). Noch offen: weitere Spieltypen,
-   Terminplanung mit Push, Live-Tafelmodus (Realtime).
+   Vorkommen und "Serie beenden"), ✅ Termine löschen + archivieren
+   (manuell und automatisch nach Alter), ✅ Einchecken/Ankunftszeit
+   erfassen (Self-Check-in + Staff-Check-in, noch ohne automatische
+   Verspätungsstrafe, siehe "Offene Punkte"). Noch offen: weitere
+   Spieltypen, Terminplanung mit Push, Live-Tafelmodus (Realtime).
 4. **Phase 3 – Finanzen & Turniere:** SEPA-XML-Export (Edge Function),
    Beitrags-/Rechnungswesen, Mannschaften/Turniere, Offline-Sync
    ausbauen, App-Store-Release.
@@ -804,39 +863,19 @@ regulärem Mitglied) gegen die lokale Supabase-Instanz getestet.
 
 ## Offene Punkte / noch nicht entschieden
 
-- **Termine archivieren** (Idee, noch nicht umgesetzt): alte/vergangene
-  Kegelabende aus der Standard-Terminliste in `events.tsx` ausblenden
-  (nicht löschen – historische Daten für `kasse.tsx`/`statistik.tsx`/
-  `termin-statistik.tsx` bleiben unverändert erhalten, die aggregieren
-  ohnehin über die gesamte Historie unabhängig von einem Archiv-Status).
-  Zusätzlich zur manuellen Variante (Button "Archivieren" pro Termin)
-  die Idee eines **automatischen** Archivierens über eine neue
-  Club-Einstellung, z.B. `club.auto_archive_days` (nullable integer):
-  Termine, deren `starts_at` mehr als X Tage zurückliegt, würden dann
-  automatisch als archiviert gelten. Naheliegendste, aufwandsärmste
-  Umsetzung: **rein clientseitig zur Anzeigezeit** berechnen (in
-  `events.tsx` einfach `starts_at < now() - auto_archive_days`
-  herausfiltern, mit einem Umschalter "Archivierte Termine anzeigen"),
-  statt eine geschriebene `archived`-Spalte + Cron-Job/Edge-Function zu
-  pflegen – kein Hintergrundjob nötig, und die Grenze lässt sich
-  jederzeit ändern, ohne bestehende Zeilen migrieren zu müssen. Eine
-  manuelle Archivierung einzelner (noch nicht alter) Termine bräuchte
-  dagegen doch eine echte Spalte (z.B. `event.archived_at`), da sie
-  nicht aus `starts_at` ableitbar ist. Gehört fachlich zu Phase 2
-  (Terminplanung), siehe Roadmap.
-- **Einchecken / Ankunftszeit erfassen** (Idee, noch nicht umgesetzt):
-  Zusätzlich zur Zu-/Absage (bereits in `attendance` umgesetzt) die
-  tatsächliche Ankunftszeit am Kegelabend festhalten – entweder
-  Self-Check-in durch das Mitglied selbst oder gesteuert durch den
-  Admin/Kassierer. Das ist genau die "echte Anwesenheitserfassung",
-  die beim `attendance`-Eintrag im Kern-Datenmodell schon als noch
-  offen vermerkt ist (vermutlich ein `checked_in_at timestamptz` auf
-  `attendance`, getrennt von `status`, damit Zusage/Absage und
-  tatsächliches Erscheinen unabhängig bleiben). Darauf aufbauend:
-  automatische Verspätungsstrafe über die geplanten `penalty_rule`/
-  `penalty`-Tabellen (z.B. 0,10 €/Minute nach `event.starts_at`), die
-  dann als `transaction` in die Kegelkasse einfließt. Gehört fachlich
-  zu Phase 1/2 (Kegelkasse) bzw. Phase 3 (Strafregeln), siehe Roadmap.
+- **Automatische Verspätungsstrafe** (Idee, noch nicht umgesetzt): das
+  Einchecken selbst ist umgesetzt (`attendance.checked_in_at`,
+  Migration 24, siehe Kern-Datenmodell und App-Code `check-in.tsx`) –
+  bewusst zunächst ohne automatische Strafe, auf Nutzerwunsch als
+  eigener nächster Schritt zurückgestellt. Idee: z.B. 0,10 €/Minute
+  nach `event.starts_at`, die beim Einchecken automatisch über die
+  bereits vorhandenen `penalty_rule`/`penalty`-Tabellen gebucht wird
+  (am naheliegendsten vermutlich durch Wiederverwendung des
+  Strafenkatalogs – eine normale `penalty_rule`, z.B. "Verspätung pro
+  Minute", auf die der Club per neuer Einstellung verweist, mit
+  `count` = verspätete Minuten – statt eines komplett neuen
+  Buchungswegs). Gehört fachlich zu Phase 1/2 (Kegelkasse) bzw. Phase 3
+  (Strafregeln), siehe Roadmap.
 - **Statistik-Zeitraum-Filter** (Idee, noch nicht umgesetzt):
   `statistik.tsx` zeigt aktuell immer die gesamte Vereinshistorie ohne
   Saison-/Datumsfilter (bewusste erste Version). Ein Filter (z.B.

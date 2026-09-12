@@ -36,6 +36,7 @@ export default function ClubSettingsScreen() {
   const [step, setStep] = useState('');
   const [stepDefaults, setStepDefaults] = useState<{ fest: string; prozent: string }>({ fest: '', prozent: '' });
   const [tieMode, setTieMode] = useState<TieMode>('alle_zahlen');
+  const [autoArchiveDays, setAutoArchiveDays] = useState('');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -56,7 +57,7 @@ export default function ClubSettingsScreen() {
       const { data: clubRow, error: clubError } = await supabase
         .from('club')
         .select(
-          'kegelgeld_cents, hausnummer_penalty_max_cents, hausnummer_penalty_mode, hausnummer_penalty_step_cents, hausnummer_penalty_step_percent, king_surcharge_tie_mode',
+          'kegelgeld_cents, hausnummer_penalty_max_cents, hausnummer_penalty_mode, hausnummer_penalty_step_cents, hausnummer_penalty_step_percent, king_surcharge_tie_mode, auto_archive_days',
         )
         .eq('id', currentMember.club_id)
         .single();
@@ -77,6 +78,7 @@ export default function ClubSettingsScreen() {
       setStepDefaults(defaults);
       setStep(defaults[clubRow.hausnummer_penalty_mode as PenaltyMode]);
       setTieMode(clubRow.king_surcharge_tie_mode as TieMode);
+      setAutoArchiveDays(clubRow.auto_archive_days != null ? String(clubRow.auto_archive_days) : '');
 
       setLoading(false);
     })();
@@ -94,6 +96,15 @@ export default function ClubSettingsScreen() {
       return;
     }
 
+    let autoArchiveDaysValue: number | null = null;
+    if (autoArchiveDays.trim() !== '') {
+      autoArchiveDaysValue = Number(autoArchiveDays);
+      if (Number.isNaN(autoArchiveDaysValue) || autoArchiveDaysValue <= 0) {
+        setError('Bitte bei "Automatisch archivieren nach" eine gültige Anzahl Tage angeben (oder leer lassen).');
+        return;
+      }
+    }
+
     setSaving(true);
     setError(null);
     setSaved(false);
@@ -107,6 +118,7 @@ export default function ClubSettingsScreen() {
         hausnummer_penalty_step_cents: penaltyMode === 'fest' ? Math.round(stepValue * 100) : 0,
         hausnummer_penalty_step_percent: penaltyMode === 'prozent' ? stepValue : 0,
         king_surcharge_tie_mode: tieMode,
+        auto_archive_days: autoArchiveDaysValue,
       })
       .eq('id', clubId);
 
@@ -227,6 +239,18 @@ export default function ClubSettingsScreen() {
               </Pressable>
             ))}
           </ThemedView>
+
+          <ThemedText type="small" themeColor="textSecondary">
+            Termine automatisch archivieren nach (Tage, leer = deaktiviert)
+          </ThemedText>
+          <TextInput
+            value={autoArchiveDays}
+            onChangeText={setAutoArchiveDays}
+            placeholder="z.B. 90"
+            placeholderTextColor={theme.textSecondary}
+            keyboardType="number-pad"
+            style={[styles.input, { color: theme.text, backgroundColor: theme.backgroundElement }]}
+          />
 
           {error && <ThemedText style={styles.error}>{error}</ThemedText>}
           {saved && <ThemedText themeColor="textSecondary">Gespeichert.</ThemedText>}

@@ -25,6 +25,7 @@ export default function RootLayout() {
         <Stack.Screen name="enter-penalties" options={{ title: 'Strafen erfassen' }} />
         <Stack.Screen name="statistik" options={{ title: 'Statistik' }} />
         <Stack.Screen name="termin-statistik" options={{ title: 'Termin-Statistik' }} />
+        <Stack.Screen name="check-in" options={{ title: 'Anwesenheit' }} />
       </Stack>
     </ThemeProvider>
   );

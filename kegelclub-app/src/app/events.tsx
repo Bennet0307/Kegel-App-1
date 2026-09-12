@@ -19,6 +19,7 @@ type EventRow = {
   status: string;
   series_id: string | null;
   series_overridden: boolean;
+  archived_at: string | null;
 };
 
 type AttendanceStatus = 'offen' | 'zugesagt' | 'abgesagt';
@@ -61,16 +62,27 @@ function formatScore(type: string, pins: number) {
   return String(pins);
 }
 
+function isEventArchived(event: EventRow, autoArchiveDays: number | null) {
+  if (event.archived_at) return true;
+  if (autoArchiveDays == null) return false;
+  const cutoff = new Date();
+  cutoff.setDate(cutoff.getDate() - autoArchiveDays);
+  return new Date(event.starts_at) < cutoff;
+}
+
 export default function EventsScreen() {
   const theme = useTheme();
   const [member, setMember] = useState<CurrentMember | null>(null);
   const [events, setEvents] = useState<EventRow[]>([]);
   const [attendance, setAttendance] = useState<Record<string, AttendanceStatus>>({});
+  const [checkedIn, setCheckedIn] = useState<Record<string, string | null>>({});
   const [results, setResults] = useState<Record<string, GameResult[]>>({});
   const [penalties, setPenalties] = useState<Record<string, PenaltyResult[]>>({});
   const [kingSurcharges, setKingSurcharges] = useState<Record<string, KingSurchargeResult[]>>({});
   const [memberNames, setMemberNames] = useState<Record<string, string>>({});
   const [seriesActive, setSeriesActive] = useState<Record<string, boolean>>({});
+  const [autoArchiveDays, setAutoArchiveDays] = useState<number | null>(null);
+  const [showArchived, setShowArchived] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [confirmingGameId, setConfirmingGameId] = useState<string | null>(null);
@@ -123,7 +135,7 @@ export default function EventsScreen() {
 
     const { data: eventRows, error: eventsError } = await supabase
       .from('event')
-      .select('id, title, starts_at, location, status, series_id, series_overridden')
+      .select('id, title, starts_at, location, status, series_id, series_overridden, archived_at')
       .eq('club_id', currentMember.club_id)
       .order('starts_at', { ascending: true });
 
@@ -135,7 +147,7 @@ export default function EventsScreen() {
 
     const { data: attendanceRows, error: attendanceError } = await supabase
       .from('attendance')
-      .select('event_id, status')
+      .select('event_id, status, checked_in_at')
       .eq('member_id', currentMember.id);
 
     if (attendanceError) {
@@ -145,8 +157,10 @@ export default function EventsScreen() {
     }
 
     const attendanceMap: Record<string, AttendanceStatus> = {};
+    const checkedInMap: Record<string, string | null> = {};
     for (const row of attendanceRows ?? []) {
       attendanceMap[row.event_id] = row.status as AttendanceStatus;
+      checkedInMap[row.event_id] = row.checked_in_at;
     }
 
     const eventIds = (eventRows ?? []).map((event) => event.id);
@@ -179,7 +193,11 @@ export default function EventsScreen() {
           .select('id, name, king_surcharge_cents')
           .eq('club_id', currentMember.club_id)
           .eq('has_king_surcharge', true),
-        supabase.from('club').select('king_surcharge_tie_mode').eq('id', currentMember.club_id).single(),
+        supabase
+          .from('club')
+          .select('king_surcharge_tie_mode, auto_archive_days')
+          .eq('id', currentMember.club_id)
+          .single(),
       ]);
 
     const nameMap: Record<string, string> = {};
@@ -229,10 +247,12 @@ export default function EventsScreen() {
 
     setEvents(eventRows ?? []);
     setAttendance(attendanceMap);
+    setCheckedIn(checkedInMap);
     setResults(resultMap);
     setPenalties(penaltyMap);
     setKingSurcharges(kingSurchargeMap);
     setMemberNames(nameMap);
+    setAutoArchiveDays(clubRow?.auto_archive_days ?? null);
     setLoading(false);
   }, []);
 
@@ -249,6 +269,24 @@ export default function EventsScreen() {
       .from('attendance')
       .upsert(
         { event_id: eventId, member_id: member.id, status, responded_at: new Date().toISOString() },
+        { onConflict: 'event_id,member_id' },
+      );
+
+    if (upsertError) {
+      setError(upsertError.message);
+    }
+  }
+
+  async function toggleCheckIn(eventId: string) {
+    if (!member) return;
+
+    const newValue = checkedIn[eventId] ? null : new Date().toISOString();
+    setCheckedIn((prev) => ({ ...prev, [eventId]: newValue }));
+
+    const { error: upsertError } = await supabase
+      .from('attendance')
+      .upsert(
+        { event_id: eventId, member_id: member.id, checked_in_at: newValue },
         { onConflict: 'event_id,member_id' },
       );
 
@@ -299,6 +337,20 @@ export default function EventsScreen() {
     load();
   }
 
+  async function handleToggleArchive(eventId: string, archivedAt: string | null) {
+    const { error: updateError } = await supabase
+      .from('event')
+      .update({ archived_at: archivedAt ? null : new Date().toISOString() })
+      .eq('id', eventId);
+
+    if (updateError) {
+      setError(updateError.message);
+      return;
+    }
+
+    load();
+  }
+
   async function handleDeleteGame(gameId: string) {
     setConfirmingGameId(null);
 
@@ -322,6 +374,10 @@ export default function EventsScreen() {
     );
   }
 
+  const visibleEvents = showArchived
+    ? events
+    : events.filter((event) => !isEventArchived(event, autoArchiveDays));
+
   return (
     <ThemedView style={styles.container}>
       <ScrollView contentContainerStyle={styles.scrollContent}>
@@ -331,6 +387,16 @@ export default function EventsScreen() {
           </ThemedText>
 
           {error && <ThemedText style={styles.error}>{error}</ThemedText>}
+
+          <Pressable style={styles.checkboxRow} onPress={() => setShowArchived((prev) => !prev)}>
+            <ThemedView
+              style={[
+                styles.checkbox,
+                { backgroundColor: showArchived ? theme.backgroundSelected : theme.backgroundElement },
+              ]}
+            />
+            <ThemedText type="small">Archivierte Termine anzeigen</ThemedText>
+          </Pressable>
 
           <Pressable onPress={() => router.push('/kasse')}>
             <ThemedText type="link">Kegelkasse</ThemedText>
@@ -356,18 +422,22 @@ export default function EventsScreen() {
             </Pressable>
           )}
 
-          {events.length === 0 && (
-            <ThemedText themeColor="textSecondary">Noch keine Kegelabende geplant.</ThemedText>
+          {visibleEvents.length === 0 && (
+            <ThemedText themeColor="textSecondary">
+              {events.length === 0 ? 'Noch keine Kegelabende geplant.' : 'Keine sichtbaren Kegelabende.'}
+            </ThemedText>
           )}
 
-          {events.map((event) => {
+          {visibleEvents.map((event) => {
             const status = attendance[event.id] ?? 'offen';
             const isCancelled = event.status === 'abgesagt';
+            const archived = isEventArchived(event, autoArchiveDays);
             return (
               <ThemedView key={event.id} type="backgroundElement" style={styles.eventCard}>
                 <ThemedText type="smallBold">
                   {event.title}
                   {isCancelled ? ' (abgesagt)' : ''}
+                  {archived ? ' (archiviert)' : ''}
                 </ThemedText>
                 <ThemedText type="small" themeColor="textSecondary">
                   {formatDate(event.starts_at)}
@@ -417,6 +487,11 @@ export default function EventsScreen() {
                         {confirmingDeleteEventId === event.id ? 'Wirklich löschen?' : 'Löschen'}
                       </ThemedText>
                     </Pressable>
+                    <Pressable onPress={() => handleToggleArchive(event.id, event.archived_at)}>
+                      <ThemedText type="small" themeColor="textSecondary">
+                        {event.archived_at ? 'Aus Archiv holen' : 'Archivieren'}
+                      </ThemedText>
+                    </Pressable>
                   </ThemedView>
                 )}
 
@@ -437,6 +512,18 @@ export default function EventsScreen() {
                     ]}
                     onPress={() => respond(event.id, 'abgesagt')}>
                     <ThemedText type="small">Absagen</ThemedText>
+                  </Pressable>
+                  <Pressable
+                    style={[
+                      styles.rsvpButton,
+                      { backgroundColor: checkedIn[event.id] ? theme.backgroundSelected : theme.background },
+                    ]}
+                    onPress={() => toggleCheckIn(event.id)}>
+                    <ThemedText type="small">
+                      {checkedIn[event.id]
+                        ? `Eingecheckt ${new Date(checkedIn[event.id]!).toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })}`
+                        : 'Einchecken'}
+                    </ThemedText>
                   </Pressable>
                 </ThemedView>
                 )}
@@ -524,6 +611,15 @@ export default function EventsScreen() {
                   </Pressable>
                 )}
 
+                {isStaff && !isCancelled && (
+                  <Pressable
+                    onPress={() =>
+                      router.push({ pathname: '/check-in', params: { eventId: event.id } })
+                    }>
+                    <ThemedText type="link">Anwesenheit erfassen</ThemedText>
+                  </Pressable>
+                )}
+
                 <Pressable
                   onPress={() =>
                     router.push({ pathname: '/termin-statistik', params: { eventId: event.id } })
@@ -599,5 +695,15 @@ const styles = StyleSheet.create({
     borderRadius: Spacing.two,
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  checkboxRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.two,
+  },
+  checkbox: {
+    width: 20,
+    height: 20,
+    borderRadius: Spacing.half,
   },
 });
