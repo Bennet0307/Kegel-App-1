@@ -710,8 +710,11 @@ genau wie in `kasse.tsx`.
   berechnen muss, was ein normaler Member per RLS nicht dürfte.
 - `kegelclub-app/src/app/create-event.tsx` – legt einen Kegelabend
   (`event`, `type: 'kegelabend'`) für den eigenen Club an; Datum/
-  Uhrzeit aktuell als zwei Text-Felder (`JJJJ-MM-TT` / `HH:MM`), kein
-  Date-Picker-Package eingebunden. Bedient drei Modi über das optionale
+  Uhrzeit aktuell als zwei Text-Felder (`TT.MM.JJJJ` / `HH:MM`, siehe
+  `@/lib/date`), kein Date-Picker-Package eingebunden – das Feld
+  akzeptiert nur noch das deutsche Datumsformat (vorher `JJJJ-MM-TT`);
+  intern wird per `germanDateToIso()` weiterhin mit ISO-Datumsstrings
+  gearbeitet (u.a. für `create_event_series`). Bedient drei Modi über das optionale
   Router-Param `eventId`: ohne `eventId` und ohne "Regeltermin"-Haken →
   einzelner Termin (`insert` in `event`); ohne `eventId` mit
   "Regeltermin"-Haken → ruft `create_event_series` (Frequenz-Umschalter
@@ -737,7 +740,11 @@ genau wie in `kasse.tsx`.
   Kleine/Große Hausnummer und tragen pro Mitglied drei Ziffern
   (Hunderter/Zehner/Einer) ein, die zur 3-stelligen Hausnummer
   zusammengerechnet werden (leere Mitglieder werden nicht
-  mitgeschickt). Strafe wird über drei Felder eingegeben:
+  mitgeschickt). Die drei Ziffernfelder haben `selectTextOnFocus`: eine
+  bereits gefüllte Ziffer wird beim Antippen automatisch markiert, ein
+  neuer Tastendruck überschreibt sie direkt (vorher musste man erst
+  manuell leeren – behobene UX-Kleinigkeit, siehe "Offene Punkte"
+  früherer Stand). Strafe wird über drei Felder eingegeben:
   Maximalbetrag (€), ein Umschalter "Fester Betrag"/"Prozentual" und
   ein Reduzierungswert (dessen Einheit sich mit dem Umschalter
   ändert – beim Wechsel wird der Wert automatisch auf den zum neuen
@@ -860,6 +867,24 @@ genau wie in `kasse.tsx`.
   display_name). Nimmt aktuell die erste gefundene Zeile – Mitglieder
   in mehreren Clubs (Schema erlaubt das) werden noch nicht
   unterstützt, es gibt keine Club-Auswahl/-Switching-UI.
+- `kegelclub-app/src/lib/money.ts` – `formatEuro()`/`centsToEuroString()`/
+  `euroStringToCents()`, ausgelagert aus fünf Screens, die zuvor jeweils
+  eigene (identische) Kopien dieser Funktionen hatten
+  (`kasse.tsx`/`strafenkatalog.tsx`/`enter-penalties.tsx`/
+  `events.tsx`/`statistik.tsx`/`termin-statistik.tsx`/`club-settings.tsx`/
+  `enter-score.tsx`). Eingabefelder (z.B. Kegelgeld, Strafformel,
+  Verspätungsstrafe) zeigen vorbelegte Beträge jetzt einheitlich mit
+  Komma als Dezimaltrenner (`centsToEuroString`, z.B. "1,50" statt
+  "1.50"); die Eingabe akzeptiert weiterhin sowohl Komma als auch Punkt
+  (`euroStringToCents`).
+- `kegelclub-app/src/lib/date.ts` – `dateToGermanString()`/
+  `germanDateToIso()`: Datumsfelder, die der Nutzer direkt eintippt
+  (aktuell nur `create-event.tsx`), verwenden das Format `TT.MM.JJJJ`
+  statt des vorherigen `JJJJ-MM-TT` – näher an der in Deutschland
+  üblichen Schreibweise. Intern wird weiterhin mit ISO-Datumsstrings
+  (`JJJJ-MM-TT`) gearbeitet (u.a. für die RPC `create_event_series` und
+  `new Date(...)`-Konstruktion), `germanDateToIso()` übersetzt die
+  Nutzereingabe dorthin und liefert `null` bei ungültigem Format.
 - `kegelclub-app/src/app/(tabs)/` – ursprüngliches Expo-Router-Tabs-Template
   (Home/Explore), unverändert bis auf den Umzug in die `(tabs)`-Gruppe.
 
@@ -938,12 +963,6 @@ regulärem Mitglied) gegen die lokale Supabase-Instanz getestet.
   Kalenderjahr oder frei wählbarer Zeitraum über `event.starts_at`)
   wäre ein sinnvoller nächster Ausbauschritt, sobald ein Club über
   mehrere Saisons hinweg Daten angesammelt hat.
-- **UX-Kleinigkeit in `enter-score.tsx`:** die Hunderter/Zehner/Einer-
-  Felder haben `maxLength={1}`; um eine bereits gefüllte Ziffer zu
-  ändern (z.B. beim Bearbeiten), muss man sie erst leeren
-  (Backspace/markieren), ein neuer Tastendruck überschreibt sie nicht
-  automatisch. Für einzelne Korrekturen unauffällig, könnte man später
-  per Fokus-Select-All-Verhalten komfortabler machen.
 - Konkrete Spielregeln/Strafregeln-Konfiguration für **weitere**
   Spieltypen über Kleine/Große Hausnummer hinaus (wie flexibel muss
   die Regel-Engine sein?) – für die zwei aktuellen Spiele reicht die

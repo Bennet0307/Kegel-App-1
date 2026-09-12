@@ -9,6 +9,7 @@ import { Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
 import { computeKingCrowns, type TieMode } from '@/lib/kingSurcharge';
 import { getCurrentMember, type CurrentMember } from '@/lib/member';
+import { formatEuro } from '@/lib/money';
 import { supabase } from '@/lib/supabase';
 
 type EventRow = {
@@ -51,10 +52,6 @@ const GAME_TYPE_LABELS: Record<string, string> = {
 };
 
 const HAUSNUMMER_TYPES = new Set(['kleine_hausnummer', 'grosse_hausnummer']);
-
-function formatEuro(cents: number) {
-  return (cents / 100).toLocaleString('de-DE', { style: 'currency', currency: 'EUR' });
-}
 
 function formatScore(type: string, pins: number) {
   if (HAUSNUMMER_TYPES.has(type)) return String(pins).padStart(3, '0');

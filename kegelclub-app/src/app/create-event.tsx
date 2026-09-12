@@ -7,6 +7,7 @@ import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
+import { dateToGermanString, germanDateToIso } from '@/lib/date';
 import { getCurrentMember } from '@/lib/member';
 import { supabase } from '@/lib/supabase';
 
@@ -62,7 +63,7 @@ export default function CreateEventScreen() {
       const startsAt = new Date(data.starts_at);
       const pad = (n: number) => String(n).padStart(2, '0');
       setTitle(data.title);
-      setDate(`${startsAt.getFullYear()}-${pad(startsAt.getMonth() + 1)}-${pad(startsAt.getDate())}`);
+      setDate(dateToGermanString(startsAt));
       setTime(`${pad(startsAt.getHours())}:${pad(startsAt.getMinutes())}`);
       setLocation(data.location ?? '');
       setSeriesId(data.series_id);
@@ -76,9 +77,15 @@ export default function CreateEventScreen() {
       return;
     }
 
-    const startsAt = new Date(`${date}T${time}`);
+    const isoDate = germanDateToIso(date);
+    if (!isoDate) {
+      setError('Datum ungültig. Format: TT.MM.JJJJ.');
+      return;
+    }
+
+    const startsAt = new Date(`${isoDate}T${time}`);
     if (Number.isNaN(startsAt.getTime())) {
-      setError('Datum/Uhrzeit ungültig. Format: JJJJ-MM-TT und HH:MM.');
+      setError('Datum/Uhrzeit ungültig. Format: TT.MM.JJJJ und HH:MM.');
       return;
     }
 
@@ -151,7 +158,7 @@ export default function CreateEventScreen() {
       p_weekday: weekday,
       p_monthly_occurrence: frequency === 'monatlich' ? monthlyOccurrence : null,
       p_time_of_day: time,
-      p_starts_on: date,
+      p_starts_on: isoDate,
     });
 
     setSaving(false);
@@ -174,7 +181,8 @@ export default function CreateEventScreen() {
     );
   }
 
-  const startsAtPreview = date ? new Date(`${date}T00:00`) : null;
+  const previewIsoDate = date ? germanDateToIso(date) : null;
+  const startsAtPreview = previewIsoDate ? new Date(`${previewIsoDate}T00:00`) : null;
   const previewValid = startsAtPreview && !Number.isNaN(startsAtPreview.getTime());
 
   return (
@@ -194,7 +202,7 @@ export default function CreateEventScreen() {
         <TextInput
           value={date}
           onChangeText={setDate}
-          placeholder={isSeries ? 'Startdatum (JJJJ-MM-TT)' : 'Datum (JJJJ-MM-TT)'}
+          placeholder={isSeries ? 'Startdatum (TT.MM.JJJJ)' : 'Datum (TT.MM.JJJJ)'}
           placeholderTextColor={theme.textSecondary}
           style={[styles.input, { color: theme.text, backgroundColor: theme.backgroundElement }]}
         />

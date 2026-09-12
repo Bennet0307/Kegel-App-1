@@ -8,6 +8,7 @@ import { ThemedView } from '@/components/themed-view';
 import { Spacing } from '@/constants/theme';
 import { computeKingCrowns, type TieMode } from '@/lib/kingSurcharge';
 import { getCurrentMember } from '@/lib/member';
+import { formatEuro } from '@/lib/money';
 import { supabase } from '@/lib/supabase';
 
 const POSITIVE_TRANSACTION_TYPES = new Set(['einzahlung', 'kegelgeld', 'strafe']);
@@ -28,10 +29,6 @@ type GameRanking = {
 type PenaltyEntry = { memberId: string; count: number; cents: number };
 type KingEntry = { memberId: string; ruleName: string; cents: number };
 type KasseEntry = { memberId: string; cents: number };
-
-function formatEuro(cents: number) {
-  return (cents / 100).toLocaleString('de-DE', { style: 'currency', currency: 'EUR' });
-}
 
 function formatScore(type: string, pins: number) {
   if (HAUSNUMMER_TYPES.has(type)) return String(pins).padStart(3, '0');

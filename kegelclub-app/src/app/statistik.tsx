@@ -7,6 +7,7 @@ import { ThemedView } from '@/components/themed-view';
 import { Spacing } from '@/constants/theme';
 import { computeKingCrowns } from '@/lib/kingSurcharge';
 import { getCurrentMember } from '@/lib/member';
+import { formatEuro } from '@/lib/money';
 import { supabase } from '@/lib/supabase';
 
 const POSITIVE_TRANSACTION_TYPES = new Set(['einzahlung', 'kegelgeld', 'strafe']);
@@ -26,10 +27,6 @@ type AttendanceEntry = {
 };
 type PenaltyEntry = { memberId: string; count: number; cents: number };
 type KingEntry = { memberId: string; total: number; byRule: Record<string, number> };
-
-function formatEuro(cents: number) {
-  return (cents / 100).toLocaleString('de-DE', { style: 'currency', currency: 'EUR' });
-}
 
 function formatHausnummer(pins: number) {
   return String(pins).padStart(3, '0');

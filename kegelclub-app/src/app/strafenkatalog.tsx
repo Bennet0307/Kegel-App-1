@@ -7,6 +7,7 @@ import { ThemedView } from '@/components/themed-view';
 import { Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
 import { getCurrentMember, type CurrentMember } from '@/lib/member';
+import { euroStringToCents, formatEuro } from '@/lib/money';
 import { supabase } from '@/lib/supabase';
 
 type PenaltyRule = {
@@ -17,10 +18,6 @@ type PenaltyRule = {
   king_surcharge_cents: number;
 };
 type PenaltyRow = { member_id: string; penalty_rule_id: string | null; rule_name: string; unit_amount_cents: number; count: number };
-
-function formatEuro(cents: number) {
-  return (cents / 100).toLocaleString('de-DE', { style: 'currency', currency: 'EUR' });
-}
 
 export default function StrafenkatalogScreen() {
   const theme = useTheme();
@@ -91,7 +88,7 @@ export default function StrafenkatalogScreen() {
       return;
     }
 
-    const amountCents = Math.round(Number(newAmount.replace(',', '.')) * 100);
+    const amountCents = euroStringToCents(newAmount);
     if (Number.isNaN(amountCents) || amountCents < 0) {
       setError('Bitte einen gültigen Betrag angeben.');
       return;
@@ -99,7 +96,7 @@ export default function StrafenkatalogScreen() {
 
     let kingSurchargeCents = 0;
     if (newHasKingSurcharge) {
-      kingSurchargeCents = Math.round(Number(newKingSurchargeAmount.replace(',', '.')) * 100);
+      kingSurchargeCents = euroStringToCents(newKingSurchargeAmount);
       if (Number.isNaN(kingSurchargeCents) || kingSurchargeCents <= 0) {
         setError('Bitte einen gültigen Pumpenkönig-Zuschlag angeben.');
         return;
@@ -213,7 +210,7 @@ export default function StrafenkatalogScreen() {
                 <TextInput
                   value={newAmount}
                   onChangeText={setNewAmount}
-                  placeholder="0.50"
+                  placeholder="0,50"
                   placeholderTextColor={theme.textSecondary}
                   keyboardType="decimal-pad"
                   style={[styles.input, styles.amountInput, { color: theme.text, backgroundColor: theme.backgroundElement }]}
@@ -238,7 +235,7 @@ export default function StrafenkatalogScreen() {
                 <TextInput
                   value={newKingSurchargeAmount}
                   onChangeText={setNewKingSurchargeAmount}
-                  placeholder="Zuschlag in € (z.B. 1.00)"
+                  placeholder="Zuschlag in € (z.B. 1,00)"
                   placeholderTextColor={theme.textSecondary}
                   keyboardType="decimal-pad"
                   style={[styles.input, { color: theme.text, backgroundColor: theme.backgroundElement }]}

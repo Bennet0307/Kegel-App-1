@@ -6,6 +6,7 @@ import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
+import { centsToEuroString, euroStringToCents } from '@/lib/money';
 import { getCurrentMember } from '@/lib/member';
 import { supabase } from '@/lib/supabase';
 
@@ -23,14 +24,6 @@ const LATE_PENALTY_MODES: { value: LatePenaltyMode; label: string }[] = [
   { value: 'pauschal', label: 'Pauschal' },
   { value: 'intervall', label: 'Pro Intervall' },
 ];
-
-function centsToEuroString(cents: number) {
-  return (cents / 100).toFixed(2);
-}
-
-function euroStringToCents(value: string) {
-  return Math.round(Number(value.replace(',', '.')) * 100);
-}
 
 export default function ClubSettingsScreen() {
   const theme = useTheme();
@@ -219,7 +212,7 @@ export default function ClubSettingsScreen() {
           <TextInput
             value={kegelgeldEuro}
             onChangeText={setKegelgeldEuro}
-            placeholder="2.00"
+            placeholder="2,00"
             placeholderTextColor={theme.textSecondary}
             keyboardType="decimal-pad"
             style={[styles.input, { color: theme.text, backgroundColor: theme.backgroundElement }]}
@@ -237,7 +230,7 @@ export default function ClubSettingsScreen() {
               <TextInput
                 value={maxEuro}
                 onChangeText={setMaxEuro}
-                placeholder="0.50"
+                placeholder="0,50"
                 placeholderTextColor={theme.textSecondary}
                 keyboardType="decimal-pad"
                 style={[styles.input, { color: theme.text, backgroundColor: theme.backgroundElement }]}
@@ -251,7 +244,7 @@ export default function ClubSettingsScreen() {
               <TextInput
                 value={step}
                 onChangeText={setStep}
-                placeholder={penaltyMode === 'prozent' ? '20' : '0.10'}
+                placeholder={penaltyMode === 'prozent' ? '20' : '0,10'}
                 placeholderTextColor={theme.textSecondary}
                 keyboardType="decimal-pad"
                 style={[styles.input, { color: theme.text, backgroundColor: theme.backgroundElement }]}
@@ -338,7 +331,7 @@ export default function ClubSettingsScreen() {
                 <TextInput
                   value={latePenaltyEuro}
                   onChangeText={setLatePenaltyEuro}
-                  placeholder="Betrag in € (z.B. 1.00)"
+                  placeholder="Betrag in € (z.B. 1,00)"
                   placeholderTextColor={theme.textSecondary}
                   keyboardType="decimal-pad"
                   style={[styles.input, { color: theme.text, backgroundColor: theme.backgroundElement }]}
@@ -365,7 +358,7 @@ export default function ClubSettingsScreen() {
                     <TextInput
                       value={latePenaltyIntervalEuro}
                       onChangeText={setLatePenaltyIntervalEuro}
-                      placeholder="z.B. 0.50"
+                      placeholder="z.B. 0,50"
                       placeholderTextColor={theme.textSecondary}
                       keyboardType="decimal-pad"
                       style={[styles.input, { color: theme.text, backgroundColor: theme.backgroundElement }]}

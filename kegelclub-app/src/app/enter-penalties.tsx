@@ -8,13 +8,10 @@ import { ThemedView } from '@/components/themed-view';
 import { Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
 import { getCurrentMember } from '@/lib/member';
+import { formatEuro } from '@/lib/money';
 import { supabase } from '@/lib/supabase';
 
 type Rule = { id: string; name: string; amount_cents: number };
-
-function formatEuro(cents: number) {
-  return (cents / 100).toLocaleString('de-DE', { style: 'currency', currency: 'EUR' });
-}
 
 export default function EnterPenaltiesScreen() {
   const theme = useTheme();

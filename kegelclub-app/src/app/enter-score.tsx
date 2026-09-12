@@ -7,6 +7,7 @@ import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
+import { centsToEuroString, euroStringToCents } from '@/lib/money';
 import { getCurrentMember } from '@/lib/member';
 import { supabase } from '@/lib/supabase';
 
@@ -20,14 +21,6 @@ const GAME_TYPES: { value: GameType; label: string }[] = [
 
 type Digits = { h: string; t: string; e: string };
 type PenaltyMode = 'fest' | 'prozent';
-
-function centsToEuroString(cents: number) {
-  return (cents / 100).toFixed(2);
-}
-
-function euroStringToCents(value: string) {
-  return Math.round(Number(value.replace(',', '.')) * 100);
-}
 
 export default function EnterScoreScreen() {
   const theme = useTheme();
@@ -319,7 +312,7 @@ export default function EnterScoreScreen() {
                     onChangeText={(value) =>
                       setPenaltyByMember((prev) => ({ ...prev, [memberRow.id]: value }))
                     }
-                    placeholder="0.00"
+                    placeholder="0,00"
                     placeholderTextColor={theme.textSecondary}
                     keyboardType="decimal-pad"
                     style={[styles.freitextInput, { color: theme.text, backgroundColor: theme.backgroundElement }]}
@@ -346,6 +339,7 @@ export default function EnterScoreScreen() {
                           onChangeText={(value) => setDigit(memberRow.id, key, value)}
                           keyboardType="number-pad"
                           maxLength={1}
+                          selectTextOnFocus
                           style={[styles.digitInput, { color: theme.text, backgroundColor: theme.backgroundElement }]}
                         />
                       ))}
@@ -366,7 +360,7 @@ export default function EnterScoreScreen() {
                   <TextInput
                     value={maxEuro}
                     onChangeText={setMaxEuro}
-                    placeholder="0.50"
+                    placeholder="0,50"
                     placeholderTextColor={theme.textSecondary}
                     keyboardType="decimal-pad"
                     style={[styles.input, { color: theme.text, backgroundColor: theme.backgroundElement }]}
@@ -380,7 +374,7 @@ export default function EnterScoreScreen() {
                   <TextInput
                     value={step}
                     onChangeText={setStep}
-                    placeholder={penaltyMode === 'prozent' ? '20' : '0.10'}
+                    placeholder={penaltyMode === 'prozent' ? '20' : '0,10'}
                     placeholderTextColor={theme.textSecondary}
                     keyboardType="decimal-pad"
                     style={[styles.input, { color: theme.text, backgroundColor: theme.backgroundElement }]}

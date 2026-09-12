@@ -7,6 +7,7 @@ import { ThemedView } from '@/components/themed-view';
 import { Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
 import { getCurrentMember, type CurrentMember } from '@/lib/member';
+import { euroStringToCents, formatEuro } from '@/lib/money';
 import { supabase } from '@/lib/supabase';
 
 type ManualType = 'einzahlung' | 'ausgabe' | 'strafe' | 'gutschrift';
@@ -44,10 +45,6 @@ function signedCents(row: TransactionRow) {
   return row.type === 'einzahlung' || row.type === 'strafe' || row.type === 'kegelgeld'
     ? row.amount_cents
     : -row.amount_cents;
-}
-
-function formatEuro(cents: number) {
-  return (cents / 100).toLocaleString('de-DE', { style: 'currency', currency: 'EUR' });
 }
 
 export default function KasseScreen() {
@@ -139,7 +136,7 @@ export default function KasseScreen() {
       return;
     }
 
-    const cents = Math.round(Number(bookingAmount.replace(',', '.')) * 100);
+    const cents = euroStringToCents(bookingAmount);
     if (Number.isNaN(cents) || cents <= 0) {
       setError('Bitte einen gültigen Betrag angeben.');
       return;
@@ -271,7 +268,7 @@ export default function KasseScreen() {
               <TextInput
                 value={bookingAmount}
                 onChangeText={setBookingAmount}
-                placeholder="Betrag in € (z.B. 10.00)"
+                placeholder="Betrag in € (z.B. 10,00)"
                 placeholderTextColor={theme.textSecondary}
                 keyboardType="decimal-pad"
                 style={[styles.input, { color: theme.text, backgroundColor: theme.backgroundElement }]}
