@@ -283,15 +283,15 @@ export default function EventsScreen() {
     const newValue = checkedIn[eventId] ? null : new Date().toISOString();
     setCheckedIn((prev) => ({ ...prev, [eventId]: newValue }));
 
-    const { error: upsertError } = await supabase
-      .from('attendance')
-      .upsert(
-        { event_id: eventId, member_id: member.id, checked_in_at: newValue },
-        { onConflict: 'event_id,member_id' },
-      );
+    const { error: rpcError } = await supabase.rpc('check_in', {
+      p_event_id: eventId,
+      p_member_id: member.id,
+      p_checked_in_at: newValue,
+    });
 
-    if (upsertError) {
-      setError(upsertError.message);
+    if (rpcError) {
+      setError(rpcError.message);
+      load();
     }
   }
 

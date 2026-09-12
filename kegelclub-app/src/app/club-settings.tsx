@@ -11,11 +11,17 @@ import { supabase } from '@/lib/supabase';
 
 type PenaltyMode = 'fest' | 'prozent';
 type TieMode = 'alle_zahlen' | 'keiner_zahlt' | 'geteilt';
+type LatePenaltyMode = 'pauschal' | 'intervall';
 
 const TIE_MODES: { value: TieMode; label: string }[] = [
   { value: 'alle_zahlen', label: 'Alle zahlen' },
   { value: 'keiner_zahlt', label: 'Keiner zahlt' },
   { value: 'geteilt', label: 'Zuschlag wird geteilt' },
+];
+
+const LATE_PENALTY_MODES: { value: LatePenaltyMode; label: string }[] = [
+  { value: 'pauschal', label: 'Pauschal' },
+  { value: 'intervall', label: 'Pro Intervall' },
 ];
 
 function centsToEuroString(cents: number) {
@@ -37,6 +43,11 @@ export default function ClubSettingsScreen() {
   const [stepDefaults, setStepDefaults] = useState<{ fest: string; prozent: string }>({ fest: '', prozent: '' });
   const [tieMode, setTieMode] = useState<TieMode>('alle_zahlen');
   const [autoArchiveDays, setAutoArchiveDays] = useState('');
+  const [latePenaltyEnabled, setLatePenaltyEnabled] = useState(false);
+  const [latePenaltyMode, setLatePenaltyMode] = useState<LatePenaltyMode>('pauschal');
+  const [latePenaltyEuro, setLatePenaltyEuro] = useState('');
+  const [latePenaltyIntervalMinutes, setLatePenaltyIntervalMinutes] = useState('');
+  const [latePenaltyIntervalEuro, setLatePenaltyIntervalEuro] = useState('');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -57,7 +68,7 @@ export default function ClubSettingsScreen() {
       const { data: clubRow, error: clubError } = await supabase
         .from('club')
         .select(
-          'kegelgeld_cents, hausnummer_penalty_max_cents, hausnummer_penalty_mode, hausnummer_penalty_step_cents, hausnummer_penalty_step_percent, king_surcharge_tie_mode, auto_archive_days',
+          'kegelgeld_cents, hausnummer_penalty_max_cents, hausnummer_penalty_mode, hausnummer_penalty_step_cents, hausnummer_penalty_step_percent, king_surcharge_tie_mode, auto_archive_days, late_penalty_mode, late_penalty_cents, late_penalty_interval_minutes, late_penalty_interval_cents',
         )
         .eq('id', currentMember.club_id)
         .single();
@@ -79,6 +90,18 @@ export default function ClubSettingsScreen() {
       setStep(defaults[clubRow.hausnummer_penalty_mode as PenaltyMode]);
       setTieMode(clubRow.king_surcharge_tie_mode as TieMode);
       setAutoArchiveDays(clubRow.auto_archive_days != null ? String(clubRow.auto_archive_days) : '');
+
+      setLatePenaltyEnabled(clubRow.late_penalty_mode != null);
+      if (clubRow.late_penalty_mode) {
+        setLatePenaltyMode(clubRow.late_penalty_mode as LatePenaltyMode);
+      }
+      setLatePenaltyEuro(clubRow.late_penalty_cents != null ? centsToEuroString(clubRow.late_penalty_cents) : '');
+      setLatePenaltyIntervalMinutes(
+        clubRow.late_penalty_interval_minutes != null ? String(clubRow.late_penalty_interval_minutes) : '',
+      );
+      setLatePenaltyIntervalEuro(
+        clubRow.late_penalty_interval_cents != null ? centsToEuroString(clubRow.late_penalty_interval_cents) : '',
+      );
 
       setLoading(false);
     })();
@@ -105,6 +128,32 @@ export default function ClubSettingsScreen() {
       }
     }
 
+    let latePenaltyCentsValue: number | null = null;
+    let latePenaltyIntervalMinutesValue: number | null = null;
+    let latePenaltyIntervalCentsValue: number | null = null;
+
+    if (latePenaltyEnabled) {
+      if (latePenaltyMode === 'pauschal') {
+        latePenaltyCentsValue = euroStringToCents(latePenaltyEuro);
+        if (Number.isNaN(latePenaltyCentsValue) || latePenaltyCentsValue <= 0) {
+          setError('Bitte bei der Verspätungsstrafe einen gültigen Betrag angeben.');
+          return;
+        }
+      } else {
+        latePenaltyIntervalMinutesValue = Number(latePenaltyIntervalMinutes);
+        latePenaltyIntervalCentsValue = euroStringToCents(latePenaltyIntervalEuro);
+        if (
+          Number.isNaN(latePenaltyIntervalMinutesValue) ||
+          latePenaltyIntervalMinutesValue <= 0 ||
+          Number.isNaN(latePenaltyIntervalCentsValue) ||
+          latePenaltyIntervalCentsValue <= 0
+        ) {
+          setError('Bitte bei der Verspätungsstrafe Minuten und Betrag gültig angeben.');
+          return;
+        }
+      }
+    }
+
     setSaving(true);
     setError(null);
     setSaved(false);
@@ -119,6 +168,10 @@ export default function ClubSettingsScreen() {
         hausnummer_penalty_step_percent: penaltyMode === 'prozent' ? stepValue : 0,
         king_surcharge_tie_mode: tieMode,
         auto_archive_days: autoArchiveDaysValue,
+        late_penalty_mode: latePenaltyEnabled ? latePenaltyMode : null,
+        late_penalty_cents: latePenaltyCentsValue,
+        late_penalty_interval_minutes: latePenaltyIntervalMinutesValue,
+        late_penalty_interval_cents: latePenaltyIntervalCentsValue,
       })
       .eq('id', clubId);
 
@@ -252,6 +305,77 @@ export default function ClubSettingsScreen() {
             style={[styles.input, { color: theme.text, backgroundColor: theme.backgroundElement }]}
           />
 
+          <Pressable style={styles.checkboxRow} onPress={() => setLatePenaltyEnabled((prev) => !prev)}>
+            <ThemedView
+              style={[
+                styles.checkbox,
+                { backgroundColor: latePenaltyEnabled ? theme.backgroundSelected : theme.backgroundElement },
+              ]}
+            />
+            <ThemedText type="small">Verspätungsstrafe aktivieren (beim Einchecken automatisch gebucht)</ThemedText>
+          </Pressable>
+
+          {latePenaltyEnabled && (
+            <>
+              <ThemedView style={styles.typeRow}>
+                {LATE_PENALTY_MODES.map((option) => (
+                  <Pressable
+                    key={option.value}
+                    style={[
+                      styles.typeButton,
+                      {
+                        backgroundColor:
+                          latePenaltyMode === option.value ? theme.backgroundSelected : theme.backgroundElement,
+                      },
+                    ]}
+                    onPress={() => setLatePenaltyMode(option.value)}>
+                    <ThemedText type="small">{option.label}</ThemedText>
+                  </Pressable>
+                ))}
+              </ThemedView>
+
+              {latePenaltyMode === 'pauschal' ? (
+                <TextInput
+                  value={latePenaltyEuro}
+                  onChangeText={setLatePenaltyEuro}
+                  placeholder="Betrag in € (z.B. 1.00)"
+                  placeholderTextColor={theme.textSecondary}
+                  keyboardType="decimal-pad"
+                  style={[styles.input, { color: theme.text, backgroundColor: theme.backgroundElement }]}
+                />
+              ) : (
+                <ThemedView style={styles.penaltyRow}>
+                  <ThemedView style={styles.penaltyField}>
+                    <ThemedText type="small" themeColor="textSecondary">
+                      Alle wie viele Minuten
+                    </ThemedText>
+                    <TextInput
+                      value={latePenaltyIntervalMinutes}
+                      onChangeText={setLatePenaltyIntervalMinutes}
+                      placeholder="z.B. 5"
+                      placeholderTextColor={theme.textSecondary}
+                      keyboardType="number-pad"
+                      style={[styles.input, { color: theme.text, backgroundColor: theme.backgroundElement }]}
+                    />
+                  </ThemedView>
+                  <ThemedView style={styles.penaltyField}>
+                    <ThemedText type="small" themeColor="textSecondary">
+                      Betrag je Intervall (€)
+                    </ThemedText>
+                    <TextInput
+                      value={latePenaltyIntervalEuro}
+                      onChangeText={setLatePenaltyIntervalEuro}
+                      placeholder="z.B. 0.50"
+                      placeholderTextColor={theme.textSecondary}
+                      keyboardType="decimal-pad"
+                      style={[styles.input, { color: theme.text, backgroundColor: theme.backgroundElement }]}
+                    />
+                  </ThemedView>
+                </ThemedView>
+              )}
+            </>
+          )}
+
           {error && <ThemedText style={styles.error}>{error}</ThemedText>}
           {saved && <ThemedText themeColor="textSecondary">Gespeichert.</ThemedText>}
 
@@ -302,6 +426,16 @@ const styles = StyleSheet.create({
   penaltyField: {
     flex: 1,
     gap: Spacing.half,
+  },
+  checkboxRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.two,
+  },
+  checkbox: {
+    width: 20,
+    height: 20,
+    borderRadius: Spacing.half,
   },
   typeRow: {
     flexDirection: 'row',

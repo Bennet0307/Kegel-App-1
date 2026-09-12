@@ -481,8 +481,49 @@ Liegen in `supabase/migrations/`, chronologisch:
     `attendance_write_staff` (auf `attendance` gab es bisher nur
     `attendance_write_own`, keinerlei Staff-Schreibrecht). Kein RPC
     nötig, reines `upsert` auf `attendance` (`onConflict:
-    'event_id,member_id'`), RLS regelt die Berechtigung.
- (Ausgangspunkt, teils noch nicht als Migration umgesetzt)
+    'event_id,member_id'`), RLS regelt die Berechtigung. **Seit
+    Migration 25 läuft das Setzen von `checked_in_at` nicht mehr über
+    ein direktes `upsert`, sondern über die neue RPC `check_in`** (die
+    dort automatisch mitberechnete Verspätungsstrafe brauchte ohnehin
+    eine security-definer-Funktion, siehe Migration 25).
+25. **`late_penalty`** – zwei Ergänzungen zum Einchecken (Migration 24)
+    auf Nutzerwunsch: (1) Admin/Kassierer können die Check-in-Zeit
+    eines Mitglieds nachträglich auf einen beliebigen Zeitpunkt setzen,
+    nicht nur "jetzt" umschalten; (2) automatische Verspätungsstrafe,
+    konfigurierbar in den Club-Einstellungen, entweder `'pauschal'`
+    (fester Betrag unabhängig davon, wie spät) oder `'intervall'` (X
+    Cent pro angefangenem Y-Minuten-Intervall). Neue Spalten auf `club`:
+    `late_penalty_mode` (NULL = deaktiviert, Default – kein Club zahlt
+    automatisch, bis das explizit aktiviert wird), `late_penalty_cents`
+    (Pauschal-Betrag), `late_penalty_interval_minutes` /
+    `late_penalty_interval_cents` (Intervall-Variante). Neue RPC
+    `check_in(p_event_id, p_member_id, p_checked_in_at)` vereinheitlicht
+    Self-Check-in und Staff-Check-in/-Bearbeitung: setzt
+    `attendance.checked_in_at` per `insert ... on conflict do update`
+    (beliebiger Zeitpunkt, nicht nur "jetzt"; NULL = Check-in rückgängig
+    machen) und berechnet danach die Verspätungsstrafe komplett neu
+    (Replace-Muster: alte automatische Buchung für genau dieses
+    Einchecken erst per `late_checkin_attendance_id`-Marker löschen,
+    dann bei Bedarf neu bilden – so bleibt eine Korrektur der Check-in-
+    Zeit oder ein Rückgängigmachen immer korrekt, ohne doppelte oder
+    verwaiste Kassenbuchungen). Neue Spalte
+    `transaction.late_checkin_attendance_id` (on delete cascade von
+    `attendance`) ist genau dieser Marker – analog zu
+    `king_surcharge_penalty_rule_id` (Migration 18) und `penalty_id`
+    (Migration 17), aus demselben Grund: mehrere `'strafe'`-Buchungen
+    pro Termin/Mitglied aus unterschiedlichen Quellen (Hausnummer,
+    Strafenkatalog, Pumpenkönig, jetzt Verspätung) müssen unabhängig
+    voneinander ersetzbar sein, ohne sich gegenseitig zu überschreiben.
+    Berechtigung: nur die eigene Zeile oder, wenn Admin/Kassierer,
+    beliebige Zeilen desselben Clubs – geprüft direkt in der
+    plpgsql-Funktion (security definer, umgeht dafür bewusst RLS).
+    Live im Browser mit beiden Modi verifiziert: Pauschal 1,00 €
+    (bleibt bei Korrektur der Uhrzeit unverändert 1,00 €, solange noch
+    verspätet), Intervall 5 Min./0,50 € bei 37 Min. Verspätung →
+    exakt 4,00 € (ceil(37/5) × 0,50 €), Rückgängig entfernt die Buchung
+    wieder vollständig.
+
+## Kern-Datenmodell (Ausgangspunkt, teils noch nicht als Migration umgesetzt)
 
 - `club` – Mandant/Verein (id, name, invite_code, created_at) ✅ umgesetzt
 - `member` – Mitglied (id, club_id, user_id→auth.users, display_name,
@@ -535,7 +576,8 @@ Liegen in `supabase/migrations/`, chronologisch:
   laufen weiterhin direkt über `transaction`.
 - `transaction` – Kassenbuch (id, club_id, member_id, event_id, game_id,
   type, amount_cents, note, paid, penalty_id,
-  king_surcharge_penalty_rule_id) ✅ umgesetzt. Typen:
+  king_surcharge_penalty_rule_id, late_checkin_attendance_id)
+  ✅ umgesetzt. Typen:
   `einzahlung` (manuelle Bareinzahlung), `kegelgeld` (automatische
   Teilnahmegebühr, eindeutig pro Termin), `strafe` (automatisch über
   Hausnummer-Formel/Freitext/Strafenkatalog oder manuell), `ausgabe`,
@@ -547,11 +589,15 @@ Liegen in `supabase/migrations/`, chronologisch:
   (Migration 17) verknüpft eine automatische Strafenkatalog-Buchung mit
   ihrer `penalty`-Zeile; `king_surcharge_penalty_rule_id` (Migration 18)
   markiert eine automatische Pumpenkönig-Zuschlag-Buchung (keine eigene
-  `penalty`-Zeile, da abgeleitet). Automatische
+  `penalty`-Zeile, da abgeleitet); `late_checkin_attendance_id`
+  (Migration 25) markiert eine automatische Verspätungsstrafe-Buchung
+  (ebenfalls keine eigene `penalty`-Zeile) und verknüpft sie mit der
+  `attendance`-Zeile, deren Check-in-Zeit sie ausgelöst hat. Automatische
   Buchung von Kegelgeld/Hausnummer-Strafe über
   `record_game_scores`/`update_game_scores`, Strafenkatalog +
   Pumpenkönig-Zuschlag über
-  `record_event_penalties`; manuelle Buchungen
+  `record_event_penalties`, Verspätungsstrafe über `check_in`; manuelle
+  Buchungen
   (Bareinzahlung, Ausgabe, Ad-hoc-Strafe) sind über die
   `transaction_write_staff`-Policy möglich, aber noch ohne eigenen
   Screen (bisher nur die automatischen Buchungen haben eine UI).
@@ -637,18 +683,31 @@ genau wie in `kasse.tsx`.
   Termin zusätzlich "Archivieren"/"Aus Archiv holen" (direktes `update`
   auf `event.archived_at`, keine RPC nötig). Ein archivierter Termin
   zeigt "(archiviert)" im Titel. In der RSVP-Zeile gibt es zusätzlich
-  einen dritten Button "Einchecken" (Self-Check-in, setzt
-  `attendance.checked_in_at` per `upsert`, zeigt danach "Eingecheckt
-  HH:MM"); für Admin/Kassierer zusätzlich der Link "Anwesenheit
-  erfassen" (→ `/check-in` mit `eventId`-Param, siehe dort) zum
-  Einchecken anderer Mitglieder.
+  einen dritten Button "Einchecken" (Self-Check-in, zeigt danach
+  "Eingecheckt HH:MM"); für Admin/Kassierer zusätzlich der Link
+  "Anwesenheit erfassen" (→ `/check-in` mit `eventId`-Param, siehe
+  dort) zum Einchecken anderer Mitglieder und zum nachträglichen
+  Anpassen der Check-in-Zeit. Das Self-Check-in ruft seit Migration 25
+  die RPC `check_in` auf (statt eines direkten `upsert` auf
+  `attendance`, siehe Migration 24) – nötig, weil dieselbe RPC danach
+  die automatische Verspätungsstrafe neu berechnet (siehe Migration
+  25).
 - `kegelclub-app/src/app/check-in.tsx` – Admin/Kassierer sehen alle
-  Mitglieder des Clubs mit RSVP-Status und einem Einchecken/
-  Rückgängig-Toggle pro Mitglied für den gegebenen Termin (Route-Param
-  `eventId`) – ermöglicht Einchecken für Mitglieder ohne eigenes
-  Smartphone am Tisch. Reines `upsert` auf `attendance`, keine RPC
-  (siehe Migration 24 für die dafür nötige `attendance_write_staff`-
-  Policy).
+  Mitglieder des Clubs mit RSVP-Status und Check-in-Zeit für den
+  gegebenen Termin (Route-Param `eventId`) – ermöglicht Einchecken für
+  Mitglieder ohne eigenes Smartphone am Tisch. Pro Mitglied ein
+  Uhrzeit-Textfeld ("HH:MM") mit "Übernehmen" (setzt einen beliebigen,
+  auch nachträglich korrigierten Zeitpunkt, kombiniert mit dem
+  Termin-Datum), "Jetzt" (setzt die aktuelle Uhrzeit) und, falls schon
+  eingecheckt, "Rückgängig" (setzt auf NULL zurück). Alle drei Aktionen
+  laufen über dieselbe RPC `check_in(p_event_id, p_member_id,
+  p_checked_in_at)` (Migration 25) statt eines direkten `upsert` auf
+  `attendance` (frühere, jetzt überholte Beschreibung aus Migration 24)
+  – die RPC prüft die Berechtigung (eigene Zeile oder Admin/Kassierer)
+  selbst per eingebettetem Rollen-Check statt über RLS, da sie
+  zusätzlich `security definer` die automatische Verspätungsstrafe
+  (Replace-Muster über `transaction.late_checkin_attendance_id`) neu
+  berechnen muss, was ein normaler Member per RLS nicht dürfte.
 - `kegelclub-app/src/app/create-event.tsx` – legt einen Kegelabend
   (`event`, `type: 'kegelabend'`) für den eigenen Club an; Datum/
   Uhrzeit aktuell als zwei Text-Felder (`JJJJ-MM-TT` / `HH:MM`), kein
@@ -727,7 +786,15 @@ genau wie in `kasse.tsx`.
   Buttons "Alle zahlen"/"Keiner zahlt"/"Zuschlag wird geteilt" für das
   Gleichstand-Verhalten des Pumpenkönig-Zuschlags. Zusätzlich
   `club.auto_archive_days` (Migration 23): Zahlenfeld "Termine
-  automatisch archivieren nach (Tage, leer = deaktiviert)". Verlinkt
+  automatisch archivieren nach (Tage, leer = deaktiviert)". Zusätzlich
+  (Migration 25) eine Checkbox "Verspätungsstrafe aktivieren (beim
+  Einchecken automatisch gebucht)": aktiviert, schaltet einen
+  Modus-Umschalter "Pauschal"/"Pro Intervall" frei
+  (`club.late_penalty_mode`) – bei "Pauschal" ein Euro-Feld
+  (`late_penalty_cents`), bei "Pro Intervall" zwei Felder "Alle wie
+  viele Minuten"/"Betrag je Intervall (€)"
+  (`late_penalty_interval_minutes`/`_cents`). Deaktiviert setzt
+  `late_penalty_mode` auf NULL (keine automatische Strafe). Verlinkt
   von `events.tsx` (nur für Admin/Kassierer sichtbar).
 - `kegelclub-app/src/app/strafenkatalog.tsx` – Verwaltung des freien
   Strafenkatalogs: alle Mitglieder sehen die Liste der `penalty_rule`-
@@ -840,8 +907,10 @@ regulärem Mitglied) gegen die lokale Supabase-Instanz getestet.
    Kegelabende (wöchentlich/monatlich, mit Verschieben/Absagen einzelner
    Vorkommen und "Serie beenden"), ✅ Termine löschen + archivieren
    (manuell und automatisch nach Alter), ✅ Einchecken/Ankunftszeit
-   erfassen (Self-Check-in + Staff-Check-in, noch ohne automatische
-   Verspätungsstrafe, siehe "Offene Punkte"). Noch offen: weitere
+   erfassen (Self-Check-in + Staff-Check-in, admin-seitig nachträglich
+   korrigierbare Check-in-Zeit) inkl. ✅ automatischer
+   Verspätungsstrafe (pauschal oder pro Intervall, konfigurierbar in
+   den Club-Einstellungen). Noch offen: weitere
    Spieltypen, Terminplanung mit Push, Live-Tafelmodus (Realtime).
 4. **Phase 3 – Finanzen & Turniere:** SEPA-XML-Export (Edge Function),
    Beitrags-/Rechnungswesen, Mannschaften/Turniere, Offline-Sync
@@ -863,19 +932,6 @@ regulärem Mitglied) gegen die lokale Supabase-Instanz getestet.
 
 ## Offene Punkte / noch nicht entschieden
 
-- **Automatische Verspätungsstrafe** (Idee, noch nicht umgesetzt): das
-  Einchecken selbst ist umgesetzt (`attendance.checked_in_at`,
-  Migration 24, siehe Kern-Datenmodell und App-Code `check-in.tsx`) –
-  bewusst zunächst ohne automatische Strafe, auf Nutzerwunsch als
-  eigener nächster Schritt zurückgestellt. Idee: z.B. 0,10 €/Minute
-  nach `event.starts_at`, die beim Einchecken automatisch über die
-  bereits vorhandenen `penalty_rule`/`penalty`-Tabellen gebucht wird
-  (am naheliegendsten vermutlich durch Wiederverwendung des
-  Strafenkatalogs – eine normale `penalty_rule`, z.B. "Verspätung pro
-  Minute", auf die der Club per neuer Einstellung verweist, mit
-  `count` = verspätete Minuten – statt eines komplett neuen
-  Buchungswegs). Gehört fachlich zu Phase 1/2 (Kegelkasse) bzw. Phase 3
-  (Strafregeln), siehe Roadmap.
 - **Statistik-Zeitraum-Filter** (Idee, noch nicht umgesetzt):
   `statistik.tsx` zeigt aktuell immer die gesamte Vereinshistorie ohne
   Saison-/Datumsfilter (bewusste erste Version). Ein Filter (z.B.
