@@ -37,7 +37,8 @@ Zielplattformen: **Mobile (iOS/Android) und Web**, eine gemeinsame Codebase.
     sowie `login`, `create-club`, `join-club`, `events`,
     `create-event`, `enter-score`, `kasse`, `club-settings`,
     `strafenkatalog`, `enter-penalties`, `statistik`,
-    `termin-statistik` und `check-in` als eigenen Screens.
+    `termin-statistik`, `check-in` und `announcements` als eigenen
+    Screens.
     `enter-score` bedient sowohl Anlegen als auch Bearbeiten (Route-Param
     `gameId` optional), `enter-penalties` erfasst/korrigiert (ebenfalls
     per Replace) die Strafenkatalog-Buchungen eines Termins
@@ -574,6 +575,22 @@ Liegen in `supabase/migrations/`, chronologisch:
     Kegelgeld blieb unverändert bestehen); nach Löschen des Termins
     (`delete_event`) waren `game`/`zehner_milestone`/`transaction`
     vollständig und ohne Reste entfernt.
+27. **`announcements`** – Ankündigungen (letzter noch fehlender
+    Kernbereich aus dem ursprünglichen Projektziel). Neue Tabelle
+    `announcement` (club_id, author_member_id, title, body,
+    created_at). Reines CRUD wie `penalty_rule` (Migration 17) – kein
+    RPC nötig, RLS regelt die Berechtigung direkt:
+    `announcement_select_same_club` (alle Mitglieder des Clubs lesen),
+    `announcement_write_staff` (nur Admin/Kassierer schreiben/
+    bearbeiten/löschen, über die bestehende `auth_staff_club_ids()`).
+    `author_member_id` ist `on delete set null` – eine Ankündigung
+    bleibt auch erhalten, wenn das verfassende Mitglied später aus dem
+    Club entfernt wird (zeigt dann "Unbekannt" als Autor, siehe
+    App-Code). Live im Browser mit Admin- und regulärem Mitglied-
+    Account verifiziert: Admin kann posten/bearbeiten/löschen,
+    reguläres Mitglied sieht dieselbe Ankündigung, aber weder
+    Erfassungsformular noch Bearbeiten-/Löschen-Links (RLS +
+    `isStaff`-Check greifen beide korrekt).
 
 ## Kern-Datenmodell (Ausgangspunkt, teils noch nicht als Migration umgesetzt)
 
@@ -662,7 +679,9 @@ Liegen in `supabase/migrations/`, chronologisch:
   Screen (bisher nur die automatischen Buchungen haben eine UI).
 - `fee`/`invoice` – Beiträge/Rechnungen inkl. SEPA-Status — noch offen
 - `team` / `team_member` – Mannschaften — noch offen
-- `announcement` – Ankündigungen — noch offen
+- `announcement` – Ankündigungen (id, club_id, author_member_id,
+  title, body, created_at) ✅ umgesetzt (Migration 27). Admin/
+  Kassierer posten, alle Mitglieder des Clubs lesen.
 
 Statistiken/Ranglisten (`statistik.tsx`) werden entgegen der
 ursprünglichen Planung **clientseitig** aus `score`/`game`/`attendance`/
@@ -714,8 +733,9 @@ genau wie in `kasse.tsx`.
   (`penalty`) werden pro Termin ebenfalls angezeigt (Name der Strafart,
   Anzahl, Gesamtbetrag); Admins/Kassierer sehen zusätzlich den Link
   "Strafen erfassen" (→ `/enter-penalties` mit `eventId`-Param). Links
-  zu "Kegelkasse", "Strafenkatalog" und "Statistik" (für alle
-  Mitglieder sichtbar) stehen oberhalb der Terminliste. Pumpenkönig-
+  zu "Ankündigungen" (Migration 27), "Kegelkasse", "Strafenkatalog" und
+  "Statistik" (für alle Mitglieder sichtbar) stehen oberhalb der
+  Terminliste. Pumpenkönig-
   Krönungen werden ebenfalls pro Termin angezeigt (👑-Symbol,
   `<Strafart>-König`) – über `computeKingCrowns()` aus `penalty`
   berechnet, **nicht** aus `transaction` gelesen (siehe
@@ -773,6 +793,15 @@ genau wie in `kasse.tsx`.
   zusätzlich `security definer` die automatische Verspätungsstrafe
   (Replace-Muster über `transaction.late_checkin_attendance_id`) neu
   berechnen muss, was ein normaler Member per RLS nicht dürfte.
+- `kegelclub-app/src/app/announcements.tsx` – Ankündigungen (Migration
+  27), verlinkt von `events.tsx`. Alle Mitglieder sehen die Liste
+  (neueste zuerst, Titel/Text/Autor/Datum). Admin/Kassierer sehen
+  zusätzlich ein Formular zum Posten (Titel + mehrzeiliger Text, reines
+  `insert` in `announcement`, keine RPC nötig) sowie pro Ankündigung
+  "Bearbeiten" (klappt dieselben zwei Felder inline in-place auf,
+  lokaler `editingId`-State statt Route-Param, da es sich um eine Liste
+  und nicht einen einzelnen Datensatz handelt) und "Löschen" (zwei Taps
+  als Bestätigung, analog zu `confirmingGameId` in `events.tsx`).
 - `kegelclub-app/src/app/create-event.tsx` – legt einen Kegelabend
   (`event`, `type: 'kegelabend'`) für den eigenen Club an; Datum/
   Uhrzeit aktuell als zwei Text-Felder (`TT.MM.JJJJ` / `HH:MM`, siehe
@@ -1031,9 +1060,10 @@ regulärem Mitglied) gegen die lokale Supabase-Instanz getestet.
    korrigierbare Check-in-Zeit) inkl. ✅ automatischer
    Verspätungsstrafe (pauschal oder pro Intervall, konfigurierbar in
    den Club-Einstellungen), ✅ "10er-Spiel" als vierter Spieltyp
-   (gemeinsame laufende Pin-Summe, nach Zehnerwert gestaffelte Strafe).
-   Noch offen: weitere Spieltypen, Terminplanung mit Push,
-   Live-Tafelmodus (Realtime).
+   (gemeinsame laufende Pin-Summe, nach Zehnerwert gestaffelte Strafe),
+   ✅ Ankündigungen (letzter noch fehlender Kernbereich aus dem
+   ursprünglichen Projektziel, siehe Migration 27). Noch offen: weitere
+   Spieltypen, Terminplanung mit Push, Live-Tafelmodus (Realtime).
 4. **Phase 3 – Finanzen & Turniere:** SEPA-XML-Export (Edge Function),
    Beitrags-/Rechnungswesen, Mannschaften/Turniere, Offline-Sync
    ausbauen, App-Store-Release.

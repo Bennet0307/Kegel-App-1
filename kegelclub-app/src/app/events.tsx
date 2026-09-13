@@ -417,6 +417,10 @@ export default function EventsScreen() {
             <ThemedText type="small">Archivierte Termine anzeigen</ThemedText>
           </Pressable>
 
+          <Pressable onPress={() => router.push('/announcements')}>
+            <ThemedText type="link">Ankündigungen</ThemedText>
+          </Pressable>
+
           <Pressable onPress={() => router.push('/kasse')}>
             <ThemedText type="link">Kegelkasse</ThemedText>
           </Pressable>
