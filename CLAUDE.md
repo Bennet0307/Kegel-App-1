@@ -936,9 +936,26 @@ genau wie in `kasse.tsx`.
   RPC für Erst- und Korrekturerfassung). Ohne Strafarten im Club zeigt
   die Seite einen Hinweis, zuerst den Strafenkatalog zu befüllen.
 - `kegelclub-app/src/app/statistik.tsx` – Club-weite Statistik/
-  Ranglisten in vier Abschnitten, alle über die gesamte
-  Vereinshistorie (kein Saison-/Zeitraum-Filter, siehe "Offene
-  Punkte"): **Kegelkasse-Ranking** (Gesamtbetrag je Mitglied
+  Ranglisten in vier Abschnitten, mit **Zeitraum-Filter** oben auf der
+  Seite (Idee aus "Offene Punkte" umgesetzt): drei Modus-Buttons
+  "Gesamte Historie"/"Kalenderjahr"/"Zeitraum". Bei "Kalenderjahr" ein
+  Jahres-Textfeld (Default: aktuelles Jahr), bei "Zeitraum" zwei
+  "Von"/"Bis"-Felder im Format `TT.MM.JJJJ` (`@/lib/date`) – beide
+  Modi mit explizitem "Anwenden"-Button (kein Reload pro Tastendruck).
+  Der Filter wirkt technisch nur auf `event.starts_at` (client-seitig
+  gegen die geladenen `event`-Zeilen geprüft, nicht per SQL-`gte`/`lte`
+  – einfacher als eine zweite Query-Variante zu pflegen): daraus
+  ergibt sich die gefilterte `eventIds`-Liste, an der alle anderen
+  Abfragen (attendance/game/score/penalty, ohnehin schon per
+  `event_id in (...)` gescoped) automatisch hängen, sowie – nur bei
+  aktivem Filter – zusätzlich die `transaction`-Abfrage fürs
+  Kegelkasse-Ranking (`event_id in eventIds`); bei "Gesamte Historie"
+  bleibt die Kegelkasse-Abfrage ungefiltert wie zuvor. **Bekannte
+  Einschränkung:** manuelle Ad-hoc-Buchungen ohne Termin-Bezug
+  (Jahresbeitrag, Ausgabe, siehe `kasse.tsx`) haben kein `event_id` und
+  fließen deshalb nur bei "Gesamte Historie" ins Kegelkasse-Ranking
+  ein, nicht in eine Jahres-/Zeitraum-Auswertung. Die vier Abschnitte
+  selbst unverändert: **Kegelkasse-Ranking** (Gesamtbetrag je Mitglied
   absteigend, nur Admin/Kassierer sichtbar, siehe Hinweis oben);
   **Hausnummer-Bestleistungen** (persönlicher Bestwert je Mitglied und
   Spielart – höchster Wert bei `grosse_hausnummer`, niedrigster bei
@@ -1084,12 +1101,6 @@ regulärem Mitglied) gegen die lokale Supabase-Instanz getestet.
 
 ## Offene Punkte / noch nicht entschieden
 
-- **Statistik-Zeitraum-Filter** (Idee, noch nicht umgesetzt):
-  `statistik.tsx` zeigt aktuell immer die gesamte Vereinshistorie ohne
-  Saison-/Datumsfilter (bewusste erste Version). Ein Filter (z.B.
-  Kalenderjahr oder frei wählbarer Zeitraum über `event.starts_at`)
-  wäre ein sinnvoller nächster Ausbauschritt, sobald ein Club über
-  mehrere Saisons hinweg Daten angesammelt hat.
 - SEPA-Lastschrift-Anbindung im Detail (Gläubiger-ID, Mandatsverwaltung)
 - Ob/wann self-hosted Supabase (Hetzner) statt Managed Supabase nötig wird
 - Separate öffentliche Marketing-/Landingpage (Format noch offen)
