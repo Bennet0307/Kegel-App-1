@@ -522,6 +522,58 @@ Liegen in `supabase/migrations/`, chronologisch:
     verspätet), Intervall 5 Min./0,50 € bei 37 Min. Verspätung →
     exakt 4,00 € (ceil(37/5) × 0,50 €), Rückgängig entfernt die Buchung
     wieder vollständig.
+26. **`zehner_spiel`** – vierter Spieltyp `'zehner'` ("10er-Spiel", Idee
+    aus "Offene Punkte" umgesetzt): alle Mitglieder werfen reihum, die
+    Pins jedes einzelnen Wurfs werden auf eine gemeinsame laufende
+    Summe addiert; jedes Mal, wenn diese Summe einen Zehnerwert (10,
+    20, 30, …) erreicht/überschreitet, wird eine nach Zehnerwert
+    gestaffelte Strafe fällig (Strafe bei Zehnerwert N = (N/10) ×
+    Schrittweite, Default 0,10 €). Wird der Zehnerwert **genau**
+    getroffen, zahlen **alle Teilnehmer außer dem Werfer**; wird
+    **drübergeworfen**, zahlt **nur der Werfer**. Da ein Wurf beim
+    Kegeln höchstens 9 Pins umwirft, löst jeder Wurf höchstens einen
+    Zehnerwert aus. Erfassung bewusst simpel gehalten (Nutzerwunsch):
+    pro Zehnerwert wird nur Werfer + genau/drüber eingetragen, nicht
+    jeder einzelne Wurf aller Mitglieder – der Rest wird automatisch
+    abgeleitet. "Teilnehmer" eines Spiels = jedes Mitglied, das laut
+    den Einträgen mindestens einmal geworfen hat (nicht die volle
+    Club-Mitgliederliste); ein Mitglied, das rein rechnerisch nie
+    Auslöser eines Zehnerwerts wird, zahlt entsprechend auch nie mit
+    (und bekommt auch kein Kegelgeld) – bei einem vollständig
+    gespielten Abend mit realistisch vielen Zehnerwerten kommt das
+    praktisch nicht vor, ist aber die bewusste Vereinfachung, die diese
+    Definition mit sich bringt. Neue Spalten `club.zehner_max_pins`
+    (Default 300) / `club.zehner_step_cents` (Default 10) als
+    Club-Standard, `game.zehner_max_pins` / `game.zehner_step_cents`
+    als Snapshot (analog zur Hausnummer-Strafformel, Migration 12).
+    Neue Tabelle `zehner_milestone` (club_id, game_id, milestone,
+    thrower_member_id, hit_exact) – ein Eintrag pro erreichtem
+    Zehnerwert, club-weit lesbar (analog `score`/`penalty`), nur
+    Admin/Kassierer schreibbar. Neue RPCs `record_zehner_game`/
+    `update_zehner_game` (Replace-Muster wie bei den anderen
+    Spieltypen) rufen die gemeinsame `book_zehner_game()` auf: bucht
+    Kegelgeld (einmal pro Teilnehmer) und summiert die Zehner-Strafen
+    **pro Mitglied auf** zu **einer einzigen** `'strafe'`-Buchung (statt
+    einer Buchung pro Zehnerwert) – zum einen für eine übersichtliche
+    Kassenbuch-Historie, zum anderen weil der bestehende Unique-Index
+    `transaction_game_member_type_unique` (game_id, member_id, type)
+    ohnehin nur eine `'strafe'`-Zeile pro Spiel und Mitglied erlaubt.
+    Neue gemeinsame Hilfsfunktion `computeZehnerPenalties()`
+    (`src/lib/zehnerSpiel.ts`) spiegelt exakt dieselbe
+    Strafenverteilungs-Logik auf Client-Seite (für Anzeige in
+    `events.tsx`/`termin-statistik.tsx` **ohne** `transaction` lesen zu
+    müssen – dieselbe Motivation wie bei `kingSurcharge.ts`, siehe dort:
+    reguläre Mitglieder sähen sonst wegen `transaction_select_own`
+    nicht die Beträge anderer Mitglieder) sowie für eine Live-Vorschau
+    beim Erfassen in `enter-score.tsx`. Live im Browser mit 4
+    Mitgliedern und 3 Zehnerwerten getestet: Vorschau beim Erfassen,
+    tatsächlich gebuchte `transaction`-Zeilen und Anzeige in
+    `events.tsx`/`termin-statistik.tsx` stimmen exakt überein; nach
+    Bearbeiten (ein Zehnerwert von "drüber" auf "genau" geändert)
+    wurden die `strafe`-Beträge korrekt ersetzt (keine Duplikate, altes
+    Kegelgeld blieb unverändert bestehen); nach Löschen des Termins
+    (`delete_event`) waren `game`/`zehner_milestone`/`transaction`
+    vollständig und ohne Reste entfernt.
 
 ## Kern-Datenmodell (Ausgangspunkt, teils noch nicht als Migration umgesetzt)
 
@@ -547,15 +599,22 @@ Liegen in `supabase/migrations/`, chronologisch:
   über `checked_in_at` (unabhängig von `status`) ebenfalls umgesetzt.
 - `game` – ein gespieltes Spiel pro Event (id, club_id, event_id, type,
   description, penalty_max_cents, penalty_mode, penalty_step_cents,
-  penalty_step_percent) ✅ umgesetzt. Drei Spieltypen: `kleine_hausnummer`/
-  `grosse_hausnummer` (3 Würfe zu einer 3-stelligen Zahl, Sieger = größte
-  bzw. kleinste Zahl, Rang-abhängige Strafformel) und `freitext`
-  (`description` = freier Spielname/-beschreibung, keine Formel – Strafe
-  pro Mitglied wird direkt eingegeben). Weitere strukturierte Spieltypen
-  mit eigener Regel-Engine sind bewusst noch nicht gebaut (siehe "Offene
-  Punkte").
+  penalty_step_percent, zehner_max_pins, zehner_step_cents) ✅
+  umgesetzt. Vier Spieltypen: `kleine_hausnummer`/`grosse_hausnummer`
+  (3 Würfe zu einer 3-stelligen Zahl, Sieger = größte bzw. kleinste
+  Zahl, Rang-abhängige Strafformel), `freitext` (`description` = freier
+  Spielname/-beschreibung, keine Formel – Strafe pro Mitglied wird
+  direkt eingegeben) und `zehner` ("10er-Spiel", Migration 26 –
+  gemeinsame laufende Pin-Summe, gestaffelte Strafe je erreichtem
+  Zehnerwert, Details siehe dort und `zehner_milestone` unten).
+- `zehner_milestone` – ein Eintrag pro erreichtem Zehnerwert im
+  10er-Spiel (id, club_id, game_id, milestone, thrower_member_id,
+  hit_exact) ✅ umgesetzt (Migration 26). Ersetzt für diesen Spieltyp
+  `score` (dort keine per-Mitglied-Ergebnisse, sondern per-Zehnerwert-
+  Einträge).
 - `score` – Ergebnis pro Mitglied und Spiel (id, club_id, game_id,
-  member_id, pins) ✅ umgesetzt. Bei den Hausnummer-Spielen steht hier
+  member_id, pins) ✅ umgesetzt (nicht für `type = 'zehner'` genutzt,
+  siehe `zehner_milestone` oben). Bei den Hausnummer-Spielen steht hier
   die fertige 3-stellige Zahl (0–999), nicht die einzelnen Würfe.
 - `penalty_rule` – freier Strafenkatalog pro Club (id, club_id, name,
   amount_cents, has_king_surcharge, king_surcharge_cents) ✅ umgesetzt
@@ -639,9 +698,15 @@ genau wie in `kasse.tsx`.
   `attendance`, `onConflict: 'event_id,member_id'`). Admins/Kassierer
   sehen zusätzlich einen Link zu `/create-event`. Erfasste Ergebnisse
   werden pro `game` angezeigt; bei den Hausnummer-Typen mit
-  führenden Nullen auf 3 Stellen, bei `freitext` als Euro-Betrag
-  formatiert (`formatScore()`); bei `freitext` steht zusätzlich die
-  `game.description` in der Kopfzeile des Ergebnisblocks.
+  führenden Nullen auf 3 Stellen, bei `freitext`/`zehner` als
+  Euro-Betrag formatiert (`formatScore()`); bei `freitext` steht
+  zusätzlich die `game.description` in der Kopfzeile des
+  Ergebnisblocks. Bei `zehner` sind die "Scores" pro Mitglied keine
+  `score`-Zeilen (die gibt es für diesen Spieltyp nicht), sondern
+  client-seitig aus den club-weit lesbaren `zehner_milestone`-Zeilen
+  über `computeZehnerPenalties()` berechnete Strafbeträge – bewusst
+  nicht aus `transaction` gelesen, aus demselben Grund wie beim
+  Pumpenkönig-Zuschlag (siehe `kingSurcharge.ts` unten).
   Admins/Kassierer sehen pro `game` zusätzlich "Bearbeiten" (→
   `/enter-score` mit `gameId`-Param) und "Löschen" (zwei Taps als
   Bestätigung – lokaler `confirmingGameId`-State statt `Alert`/Modal,
@@ -763,6 +828,20 @@ genau wie in `kasse.tsx`.
   die Strafe statt der Formel-Felder (leer = nicht teilgenommen, 0 =
   teilgenommen ohne Strafe) – ruft `record_freitext_game`/
   `update_freitext_game` statt `record_game_scores`/`update_game_scores`.
+  Vierte Spieltyp-Option "10er-Spiel" (`isZehner`-Zweig, Migration 26):
+  zwei Felder "Maximalzahl an Pins"/"Strafe je Zehnerwert (€)" (beim
+  Laden mit `club.zehner_max_pins`/`zehner_step_cents` vorbelegt),
+  danach eine Zeile pro Zehnerwert (aus der Maximalzahl abgeleitet,
+  `zehnerMilestoneList`) mit Mitglieder-Chips zur Werfer-Auswahl plus
+  zwei Buttons "Genau getroffen"/"Drübergeworfen". Eine Live-Vorschau
+  darunter zeigt die daraus resultierenden Strafbeträge pro Mitglied
+  (`computeZehnerPenalties()` aus `@/lib/zehnerSpiel`, dieselbe
+  Funktion, die auch server-seitig – als SQL nachgebaut, siehe
+  Migration 26 – tatsächlich bucht, damit Vorschau und Buchung
+  garantiert übereinstimmen). Ruft `record_zehner_game`/
+  `update_zehner_game`; beim Bearbeiten werden zusätzlich die
+  bestehenden `zehner_milestone`-Zeilen des Spiels geladen und
+  vorausgefüllt.
 - `kegelclub-app/src/app/kasse.tsx` – Admin/Kassierer sehen den
   Gesamtbetrag aller Mitglieder (aus `transaction` client-seitig
   aufsummiert, `einzahlung`/`kegelgeld`/`strafe` positiv), reguläre
@@ -801,7 +880,11 @@ genau wie in `kasse.tsx`.
   (`late_penalty_cents`), bei "Pro Intervall" zwei Felder "Alle wie
   viele Minuten"/"Betrag je Intervall (€)"
   (`late_penalty_interval_minutes`/`_cents`). Deaktiviert setzt
-  `late_penalty_mode` auf NULL (keine automatische Strafe). Verlinkt
+  `late_penalty_mode` auf NULL (keine automatische Strafe). Zusätzlich
+  (Migration 26) zwei Felder "Maximalzahl an Pins"/"Strafe je
+  Zehnerwert (€)" als Club-Standard fürs 10er-Spiel
+  (`zehner_max_pins`/`zehner_step_cents`, pro Ergebniserfassung in
+  `enter-score.tsx` überschreibbar). Verlinkt
   von `events.tsx` (nur für Admin/Kassierer sichtbar).
 - `kegelclub-app/src/app/strafenkatalog.tsx` – Verwaltung des freien
   Strafenkatalogs: alle Mitglieder sehen die Liste der `penalty_rule`-
@@ -848,7 +931,9 @@ genau wie in `kasse.tsx`.
   analog zum Kegelkasse-Ranking in `statistik.tsx`); **Ergebnisse**
   je `game` dieses Termins (bewusst zuletzt), bei den Hausnummer-Typen
   mit Platzierung (1./2./...) sortiert nach Sieg-Richtung, bei
-  `freitext` unsortiert (kein kompetitiver Vergleich).
+  `freitext` unsortiert (kein kompetitiver Vergleich), bei `zehner`
+  absteigend nach Strafbetrag (aus `zehner_milestone` über
+  `computeZehnerPenalties()` berechnet, analog zu `events.tsx`).
 - `kegelclub-app/src/lib/kingSurcharge.ts` – `computeKingCrowns()`:
   gemeinsam genutzte Hilfsfunktion, die Pumpenkönig-Krönungen aus
   `penalty` + `penalty_rule` (has_king_surcharge/king_surcharge_cents)
@@ -885,6 +970,16 @@ genau wie in `kasse.tsx`.
   (`JJJJ-MM-TT`) gearbeitet (u.a. für die RPC `create_event_series` und
   `new Date(...)`-Konstruktion), `germanDateToIso()` übersetzt die
   Nutzereingabe dorthin und liefert `null` bei ungültigem Format.
+- `kegelclub-app/src/lib/zehnerSpiel.ts` – `computeZehnerPenalties()`
+  (Migration 26): rekonstruiert die Strafenverteilung des 10er-Spiels
+  (genau getroffen -> alle Teilnehmer außer Werfer zahlen,
+  drübergeworfen -> nur der Werfer zahlt) aus einer Liste von
+  Zehnerwert-Einträgen + der Schrittweite – spiegelt exakt die Logik
+  aus `book_zehner_game()` in SQL. Gemeinsam genutzt von
+  `enter-score.tsx` (Live-Vorschau beim Erfassen) sowie `events.tsx`/
+  `termin-statistik.tsx` (Anzeige aus dem club-weit lesbaren
+  `zehner_milestone`, ohne `transaction` lesen zu müssen – siehe
+  `kingSurcharge.ts` für dieselbe Motivation).
 - `kegelclub-app/src/app/(tabs)/` – ursprüngliches Expo-Router-Tabs-Template
   (Home/Explore), unverändert bis auf den Umzug in die `(tabs)`-Gruppe.
 
@@ -935,8 +1030,10 @@ regulärem Mitglied) gegen die lokale Supabase-Instanz getestet.
    erfassen (Self-Check-in + Staff-Check-in, admin-seitig nachträglich
    korrigierbare Check-in-Zeit) inkl. ✅ automatischer
    Verspätungsstrafe (pauschal oder pro Intervall, konfigurierbar in
-   den Club-Einstellungen). Noch offen: weitere
-   Spieltypen, Terminplanung mit Push, Live-Tafelmodus (Realtime).
+   den Club-Einstellungen), ✅ "10er-Spiel" als vierter Spieltyp
+   (gemeinsame laufende Pin-Summe, nach Zehnerwert gestaffelte Strafe).
+   Noch offen: weitere Spieltypen, Terminplanung mit Push,
+   Live-Tafelmodus (Realtime).
 4. **Phase 3 – Finanzen & Turniere:** SEPA-XML-Export (Edge Function),
    Beitrags-/Rechnungswesen, Mannschaften/Turniere, Offline-Sync
    ausbauen, App-Store-Release.
@@ -963,10 +1060,6 @@ regulärem Mitglied) gegen die lokale Supabase-Instanz getestet.
   Kalenderjahr oder frei wählbarer Zeitraum über `event.starts_at`)
   wäre ein sinnvoller nächster Ausbauschritt, sobald ein Club über
   mehrere Saisons hinweg Daten angesammelt hat.
-- Konkrete Spielregeln/Strafregeln-Konfiguration für **weitere**
-  Spieltypen über Kleine/Große Hausnummer hinaus (wie flexibel muss
-  die Regel-Engine sein?) – für die zwei aktuellen Spiele reicht die
-  feste Hausnummer-Logik + frei konfigurierbare Strafstaffel.
 - SEPA-Lastschrift-Anbindung im Detail (Gläubiger-ID, Mandatsverwaltung)
 - Ob/wann self-hosted Supabase (Hetzner) statt Managed Supabase nötig wird
 - Separate öffentliche Marketing-/Landingpage (Format noch offen)

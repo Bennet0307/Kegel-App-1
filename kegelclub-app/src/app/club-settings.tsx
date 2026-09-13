@@ -41,6 +41,8 @@ export default function ClubSettingsScreen() {
   const [latePenaltyEuro, setLatePenaltyEuro] = useState('');
   const [latePenaltyIntervalMinutes, setLatePenaltyIntervalMinutes] = useState('');
   const [latePenaltyIntervalEuro, setLatePenaltyIntervalEuro] = useState('');
+  const [zehnerMaxPins, setZehnerMaxPins] = useState('');
+  const [zehnerStepEuro, setZehnerStepEuro] = useState('');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -61,7 +63,7 @@ export default function ClubSettingsScreen() {
       const { data: clubRow, error: clubError } = await supabase
         .from('club')
         .select(
-          'kegelgeld_cents, hausnummer_penalty_max_cents, hausnummer_penalty_mode, hausnummer_penalty_step_cents, hausnummer_penalty_step_percent, king_surcharge_tie_mode, auto_archive_days, late_penalty_mode, late_penalty_cents, late_penalty_interval_minutes, late_penalty_interval_cents',
+          'kegelgeld_cents, hausnummer_penalty_max_cents, hausnummer_penalty_mode, hausnummer_penalty_step_cents, hausnummer_penalty_step_percent, king_surcharge_tie_mode, auto_archive_days, late_penalty_mode, late_penalty_cents, late_penalty_interval_minutes, late_penalty_interval_cents, zehner_max_pins, zehner_step_cents',
         )
         .eq('id', currentMember.club_id)
         .single();
@@ -95,6 +97,8 @@ export default function ClubSettingsScreen() {
       setLatePenaltyIntervalEuro(
         clubRow.late_penalty_interval_cents != null ? centsToEuroString(clubRow.late_penalty_interval_cents) : '',
       );
+      setZehnerMaxPins(String(clubRow.zehner_max_pins));
+      setZehnerStepEuro(centsToEuroString(clubRow.zehner_step_cents));
 
       setLoading(false);
     })();
@@ -147,6 +151,18 @@ export default function ClubSettingsScreen() {
       }
     }
 
+    const zehnerMaxPinsValue = Number(zehnerMaxPins);
+    const zehnerStepCentsValue = euroStringToCents(zehnerStepEuro);
+    if (
+      !Number.isInteger(zehnerMaxPinsValue) ||
+      zehnerMaxPinsValue < 10 ||
+      Number.isNaN(zehnerStepCentsValue) ||
+      zehnerStepCentsValue < 0
+    ) {
+      setError('Bitte beim 10er-Spiel eine gültige Maximalzahl (mind. 10) und Schrittweite angeben.');
+      return;
+    }
+
     setSaving(true);
     setError(null);
     setSaved(false);
@@ -165,6 +181,8 @@ export default function ClubSettingsScreen() {
         late_penalty_cents: latePenaltyCentsValue,
         late_penalty_interval_minutes: latePenaltyIntervalMinutesValue,
         late_penalty_interval_cents: latePenaltyIntervalCentsValue,
+        zehner_max_pins: zehnerMaxPinsValue,
+        zehner_step_cents: zehnerStepCentsValue,
       })
       .eq('id', clubId);
 
@@ -368,6 +386,38 @@ export default function ClubSettingsScreen() {
               )}
             </>
           )}
+
+          <ThemedText type="small" themeColor="textSecondary">
+            10er-Spiel: Standardwerte (pro Ergebniserfassung überschreibbar)
+          </ThemedText>
+          <ThemedView style={styles.penaltyRow}>
+            <ThemedView style={styles.penaltyField}>
+              <ThemedText type="small" themeColor="textSecondary">
+                Maximalzahl an Pins
+              </ThemedText>
+              <TextInput
+                value={zehnerMaxPins}
+                onChangeText={setZehnerMaxPins}
+                placeholder="300"
+                placeholderTextColor={theme.textSecondary}
+                keyboardType="number-pad"
+                style={[styles.input, { color: theme.text, backgroundColor: theme.backgroundElement }]}
+              />
+            </ThemedView>
+            <ThemedView style={styles.penaltyField}>
+              <ThemedText type="small" themeColor="textSecondary">
+                Strafe je Zehnerwert (€)
+              </ThemedText>
+              <TextInput
+                value={zehnerStepEuro}
+                onChangeText={setZehnerStepEuro}
+                placeholder="0,10"
+                placeholderTextColor={theme.textSecondary}
+                keyboardType="decimal-pad"
+                style={[styles.input, { color: theme.text, backgroundColor: theme.backgroundElement }]}
+              />
+            </ThemedView>
+          </ThemedView>
 
           {error && <ThemedText style={styles.error}>{error}</ThemedText>}
           {saved && <ThemedText themeColor="textSecondary">Gespeichert.</ThemedText>}

@@ -11,6 +11,7 @@ import { computeKingCrowns, type TieMode } from '@/lib/kingSurcharge';
 import { getCurrentMember, type CurrentMember } from '@/lib/member';
 import { formatEuro } from '@/lib/money';
 import { supabase } from '@/lib/supabase';
+import { computeZehnerPenalties } from '@/lib/zehnerSpiel';
 
 type EventRow = {
   id: string;
@@ -49,13 +50,14 @@ const GAME_TYPE_LABELS: Record<string, string> = {
   kleine_hausnummer: 'Kleine Hausnummer',
   grosse_hausnummer: 'Große Hausnummer',
   freitext: 'Freitext',
+  zehner: '10er-Spiel',
 };
 
 const HAUSNUMMER_TYPES = new Set(['kleine_hausnummer', 'grosse_hausnummer']);
 
 function formatScore(type: string, pins: number) {
   if (HAUSNUMMER_TYPES.has(type)) return String(pins).padStart(3, '0');
-  if (type === 'freitext') return formatEuro(pins);
+  if (type === 'freitext' || type === 'zehner') return formatEuro(pins);
   return String(pins);
 }
 
@@ -166,9 +168,15 @@ export default function EventsScreen() {
       await Promise.all([
         supabase.from('member').select('id, display_name').eq('club_id', currentMember.club_id),
         eventIds.length > 0
-          ? supabase.from('game').select('id, event_id, type, description').in('event_id', eventIds)
+          ? supabase.from('game').select('id, event_id, type, description, zehner_step_cents').in('event_id', eventIds)
           : Promise.resolve({
-              data: [] as { id: string; event_id: string; type: string; description: string | null }[],
+              data: [] as {
+                id: string;
+                event_id: string;
+                type: string;
+                description: string | null;
+                zehner_step_cents: number | null;
+              }[],
             }),
         eventIds.length > 0
           ? supabase
@@ -203,16 +211,30 @@ export default function EventsScreen() {
     }
 
     const gameIds = (gameRows ?? []).map((game) => game.id);
-    const { data: scoreRows } =
+    const [{ data: scoreRows }, { data: zehnerRows }] = await Promise.all([
       gameIds.length > 0
-        ? await supabase.from('score').select('game_id, member_id, pins').in('game_id', gameIds)
-        : { data: [] as { game_id: string; member_id: string; pins: number }[] };
+        ? supabase.from('score').select('game_id, member_id, pins').in('game_id', gameIds)
+        : Promise.resolve({ data: [] as { game_id: string; member_id: string; pins: number }[] }),
+      gameIds.length > 0
+        ? supabase.from('zehner_milestone').select('game_id, milestone, thrower_member_id, hit_exact').in('game_id', gameIds)
+        : Promise.resolve({
+            data: [] as { game_id: string; milestone: number; thrower_member_id: string; hit_exact: boolean }[],
+          }),
+    ]);
 
     const resultMap: Record<string, GameResult[]> = {};
     for (const game of gameRows ?? []) {
-      const scores = (scoreRows ?? [])
-        .filter((score) => score.game_id === game.id)
-        .map((score) => ({ memberId: score.member_id, pins: score.pins }));
+      const scores =
+        game.type === 'zehner'
+          ? computeZehnerPenalties(
+              (zehnerRows ?? [])
+                .filter((row) => row.game_id === game.id)
+                .map((row) => ({ milestone: row.milestone, throwerMemberId: row.thrower_member_id, hitExact: row.hit_exact })),
+              game.zehner_step_cents ?? 0,
+            ).map((entry) => ({ memberId: entry.memberId, pins: entry.cents }))
+          : (scoreRows ?? [])
+              .filter((score) => score.game_id === game.id)
+              .map((score) => ({ memberId: score.member_id, pins: score.pins }));
       resultMap[game.event_id] = [
         ...(resultMap[game.event_id] ?? []),
         { gameId: game.id, type: game.type, description: game.description, scores },

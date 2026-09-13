@@ -7,20 +7,23 @@ import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
-import { centsToEuroString, euroStringToCents } from '@/lib/money';
 import { getCurrentMember } from '@/lib/member';
+import { centsToEuroString, euroStringToCents, formatEuro } from '@/lib/money';
 import { supabase } from '@/lib/supabase';
+import { computeZehnerPenalties, type ZehnerMilestoneEntry } from '@/lib/zehnerSpiel';
 
-type GameType = 'kleine_hausnummer' | 'grosse_hausnummer' | 'freitext';
+type GameType = 'kleine_hausnummer' | 'grosse_hausnummer' | 'freitext' | 'zehner';
 
 const GAME_TYPES: { value: GameType; label: string }[] = [
   { value: 'kleine_hausnummer', label: 'Kleine Hausnummer' },
   { value: 'grosse_hausnummer', label: 'Große Hausnummer' },
   { value: 'freitext', label: 'Freitext' },
+  { value: 'zehner', label: '10er-Spiel' },
 ];
 
 type Digits = { h: string; t: string; e: string };
 type PenaltyMode = 'fest' | 'prozent';
+type ZehnerEntry = { throwerId: string; hitExact: boolean | null };
 
 export default function EnterScoreScreen() {
   const theme = useTheme();
@@ -36,11 +39,34 @@ export default function EnterScoreScreen() {
   const [stepDefaults, setStepDefaults] = useState<{ fest: string; prozent: string }>({ fest: '', prozent: '' });
   const [description, setDescription] = useState('');
   const [penaltyByMember, setPenaltyByMember] = useState<Record<string, string>>({});
+  const [zehnerMaxPins, setZehnerMaxPins] = useState('');
+  const [zehnerStepEuro, setZehnerStepEuro] = useState('');
+  const [zehnerMilestones, setZehnerMilestones] = useState<Record<number, ZehnerEntry>>({});
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const isFreitext = gameType === 'freitext';
+  const isZehner = gameType === 'zehner';
+  const zehnerMilestoneList = (() => {
+    const max = Number(zehnerMaxPins);
+    if (!Number.isFinite(max) || max < 10) return [];
+    const list: number[] = [];
+    for (let m = 10; m <= max; m += 10) list.push(m);
+    return list;
+  })();
+  const zehnerPreview = (() => {
+    const stepCents = euroStringToCents(zehnerStepEuro);
+    if (Number.isNaN(stepCents)) return [];
+    const entries: ZehnerMilestoneEntry[] = [];
+    for (const milestone of zehnerMilestoneList) {
+      const entry = zehnerMilestones[milestone];
+      if (entry && entry.throwerId && entry.hitExact !== null) {
+        entries.push({ milestone, throwerMemberId: entry.throwerId, hitExact: entry.hitExact });
+      }
+    }
+    return computeZehnerPenalties(entries, stepCents);
+  })();
 
   useEffect(() => {
     (async () => {
@@ -60,7 +86,7 @@ export default function EnterScoreScreen() {
         supabase
           .from('club')
           .select(
-            'hausnummer_penalty_max_cents, hausnummer_penalty_mode, hausnummer_penalty_step_cents, hausnummer_penalty_step_percent',
+            'hausnummer_penalty_max_cents, hausnummer_penalty_mode, hausnummer_penalty_step_cents, hausnummer_penalty_step_percent, zehner_max_pins, zehner_step_cents',
           )
           .eq('id', currentMember.club_id)
           .single(),
@@ -83,16 +109,21 @@ export default function EnterScoreScreen() {
         };
         setStepDefaults(defaults);
         setStep(defaults[clubRow.hausnummer_penalty_mode as PenaltyMode]);
+        setZehnerMaxPins(String(clubRow.zehner_max_pins));
+        setZehnerStepEuro(centsToEuroString(clubRow.zehner_step_cents));
       }
 
       if (gameId) {
-        const [{ data: gameRow }, { data: scoreRows }] = await Promise.all([
+        const [{ data: gameRow }, { data: scoreRows }, { data: zehnerRows }] = await Promise.all([
           supabase
             .from('game')
-            .select('type, description, penalty_max_cents, penalty_mode, penalty_step_cents, penalty_step_percent')
+            .select(
+              'type, description, penalty_max_cents, penalty_mode, penalty_step_cents, penalty_step_percent, zehner_max_pins, zehner_step_cents',
+            )
             .eq('id', gameId)
             .single(),
           supabase.from('score').select('member_id, pins').eq('game_id', gameId),
+          supabase.from('zehner_milestone').select('milestone, thrower_member_id, hit_exact').eq('game_id', gameId),
         ]);
 
         if (gameRow) {
@@ -100,6 +131,9 @@ export default function EnterScoreScreen() {
 
           if (gameRow.type === 'freitext') {
             setDescription(gameRow.description ?? '');
+          } else if (gameRow.type === 'zehner') {
+            if (gameRow.zehner_max_pins != null) setZehnerMaxPins(String(gameRow.zehner_max_pins));
+            if (gameRow.zehner_step_cents != null) setZehnerStepEuro(centsToEuroString(gameRow.zehner_step_cents));
           } else if (gameRow.penalty_max_cents != null && gameRow.penalty_mode) {
             setMaxEuro(centsToEuroString(gameRow.penalty_max_cents));
             setPenaltyMode(gameRow.penalty_mode as PenaltyMode);
@@ -117,6 +151,12 @@ export default function EnterScoreScreen() {
             penalties[row.member_id] = centsToEuroString(row.pins);
           }
           setPenaltyByMember(penalties);
+        } else if (gameRow?.type === 'zehner') {
+          const milestones: Record<number, ZehnerEntry> = {};
+          for (const row of zehnerRows ?? []) {
+            milestones[row.milestone] = { throwerId: row.thrower_member_id, hitExact: row.hit_exact };
+          }
+          setZehnerMilestones(milestones);
         } else {
           const digits: Record<string, Digits> = {};
           for (const row of scoreRows ?? []) {
@@ -137,6 +177,20 @@ export default function EnterScoreScreen() {
       const current = prev[memberId] ?? { h: '', t: '', e: '' };
       return { ...prev, [memberId]: { ...current, [key]: digit } };
     });
+  }
+
+  function setMilestoneThrower(milestone: number, throwerId: string) {
+    setZehnerMilestones((prev) => ({
+      ...prev,
+      [milestone]: { throwerId, hitExact: prev[milestone]?.hitExact ?? null },
+    }));
+  }
+
+  function setMilestoneHitExact(milestone: number, hitExact: boolean) {
+    setZehnerMilestones((prev) => ({
+      ...prev,
+      [milestone]: { throwerId: prev[milestone]?.throwerId ?? '', hitExact },
+    }));
   }
 
   async function handleSave() {
@@ -177,6 +231,56 @@ export default function EnterScoreScreen() {
             p_event_id: eventId,
             p_description: description,
             p_penalties: penalties,
+          });
+
+      setSaving(false);
+
+      if (rpcError) {
+        setError(rpcError.message);
+        return;
+      }
+
+      router.replace('/events');
+      return;
+    }
+
+    if (isZehner) {
+      const maxPins = Number(zehnerMaxPins);
+      const stepCents = euroStringToCents(zehnerStepEuro);
+      if (!Number.isInteger(maxPins) || maxPins < 10) {
+        setError('Bitte eine gültige Maximalzahl an Pins angeben (mindestens 10).');
+        return;
+      }
+      if (Number.isNaN(stepCents) || stepCents < 0) {
+        setError('Bitte eine gültige Schrittweite angeben.');
+        return;
+      }
+
+      const milestones: { milestone: number; thrower_member_id: string; hit_exact: boolean }[] = [];
+      for (const milestone of zehnerMilestoneList) {
+        const entry = zehnerMilestones[milestone];
+        if (!entry || !entry.throwerId || entry.hitExact === null) {
+          setError(`Bitte bei Zehnerwert ${milestone} Werfer und Genau/Drüber angeben.`);
+          return;
+        }
+        milestones.push({ milestone, thrower_member_id: entry.throwerId, hit_exact: entry.hitExact });
+      }
+
+      setSaving(true);
+      setError(null);
+
+      const { error: rpcError } = isEditing
+        ? await supabase.rpc('update_zehner_game', {
+            p_game_id: gameId,
+            p_max_pins: maxPins,
+            p_step_cents: stepCents,
+            p_milestones: milestones,
+          })
+        : await supabase.rpc('record_zehner_game', {
+            p_event_id: eventId,
+            p_max_pins: maxPins,
+            p_step_cents: stepCents,
+            p_milestones: milestones,
           });
 
       setSaving(false);
@@ -319,6 +423,106 @@ export default function EnterScoreScreen() {
                   />
                 </ThemedView>
               ))}
+            </>
+          ) : isZehner ? (
+            <>
+              <ThemedView style={styles.penaltyRow}>
+                <ThemedView style={styles.penaltyField}>
+                  <ThemedText type="small" themeColor="textSecondary">
+                    Maximalzahl an Pins
+                  </ThemedText>
+                  <TextInput
+                    value={zehnerMaxPins}
+                    onChangeText={setZehnerMaxPins}
+                    placeholder="300"
+                    placeholderTextColor={theme.textSecondary}
+                    keyboardType="number-pad"
+                    style={[styles.input, { color: theme.text, backgroundColor: theme.backgroundElement }]}
+                  />
+                </ThemedView>
+
+                <ThemedView style={styles.penaltyField}>
+                  <ThemedText type="small" themeColor="textSecondary">
+                    Strafe je Zehnerwert (€)
+                  </ThemedText>
+                  <TextInput
+                    value={zehnerStepEuro}
+                    onChangeText={setZehnerStepEuro}
+                    placeholder="0,10"
+                    placeholderTextColor={theme.textSecondary}
+                    keyboardType="decimal-pad"
+                    style={[styles.input, { color: theme.text, backgroundColor: theme.backgroundElement }]}
+                  />
+                </ThemedView>
+              </ThemedView>
+
+              <ThemedText type="small" themeColor="textSecondary">
+                Pro Zehnerwert: wer hat geworfen, genau getroffen oder drübergeworfen? (genau = alle außer
+                Werfer zahlen, drüber = nur Werfer zahlt)
+              </ThemedText>
+
+              {zehnerMilestoneList.length === 0 && (
+                <ThemedText themeColor="textSecondary">Bitte zuerst eine Maximalzahl ab 10 angeben.</ThemedText>
+              )}
+
+              {zehnerMilestoneList.map((milestone) => {
+                const entry = zehnerMilestones[milestone];
+                return (
+                  <ThemedView key={milestone} type="backgroundElement" style={styles.zehnerRow}>
+                    <ThemedText type="smallBold">{milestone}</ThemedText>
+                    <ThemedView style={styles.chipRow}>
+                      {members.map((memberRow) => (
+                        <Pressable
+                          key={memberRow.id}
+                          style={[
+                            styles.chip,
+                            {
+                              backgroundColor:
+                                entry?.throwerId === memberRow.id ? theme.backgroundSelected : theme.background,
+                            },
+                          ]}
+                          onPress={() => setMilestoneThrower(milestone, memberRow.id)}>
+                          <ThemedText type="small">{memberRow.display_name}</ThemedText>
+                        </Pressable>
+                      ))}
+                    </ThemedView>
+                    <ThemedView style={styles.typeRow}>
+                      <Pressable
+                        style={[
+                          styles.typeButton,
+                          { backgroundColor: entry?.hitExact === true ? theme.backgroundSelected : theme.background },
+                        ]}
+                        onPress={() => setMilestoneHitExact(milestone, true)}>
+                        <ThemedText type="small">Genau getroffen</ThemedText>
+                      </Pressable>
+                      <Pressable
+                        style={[
+                          styles.typeButton,
+                          { backgroundColor: entry?.hitExact === false ? theme.backgroundSelected : theme.background },
+                        ]}
+                        onPress={() => setMilestoneHitExact(milestone, false)}>
+                        <ThemedText type="small">Drübergeworfen</ThemedText>
+                      </Pressable>
+                    </ThemedView>
+                  </ThemedView>
+                );
+              })}
+
+              {zehnerPreview.length > 0 && (
+                <>
+                  <ThemedText type="smallBold" style={styles.sectionSpacing}>
+                    Vorschau: Strafen
+                  </ThemedText>
+                  {zehnerPreview.map(({ memberId, cents }) => (
+                    <ThemedView key={memberId} style={styles.row}>
+                      <ThemedText type="small">
+                        {members.find((memberRow) => memberRow.id === memberId)?.display_name ?? '?'}
+                      </ThemedText>
+                      <ThemedText type="small">{formatEuro(cents)}</ThemedText>
+                    </ThemedView>
+                  ))}
+                </>
+              )}
             </>
           ) : (
             <>
@@ -490,6 +694,30 @@ const styles = StyleSheet.create({
   penaltyField: {
     flex: 1,
     gap: Spacing.half,
+  },
+  zehnerRow: {
+    borderRadius: Spacing.two,
+    paddingHorizontal: Spacing.three,
+    paddingVertical: Spacing.two,
+    gap: Spacing.two,
+  },
+  chipRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: Spacing.two,
+  },
+  chip: {
+    paddingHorizontal: Spacing.three,
+    paddingVertical: Spacing.one,
+    borderRadius: Spacing.two,
+  },
+  row: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  sectionSpacing: {
+    marginTop: Spacing.two,
   },
   error: {
     color: '#d33',
