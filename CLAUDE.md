@@ -57,6 +57,20 @@ Zielplattformen: **Mobile (iOS/Android) und Web**, eine gemeinsame Codebase.
     (`app.json` → `extra.eas.projectId`) für echte Push-Tokens – bisher
     noch nicht angelegt (kein `eas.json` im Repo), bis dahin bricht die
     Token-Registrierung auf echten Geräten früh ab (abgefangen, siehe dort).
+  - **Nativer Modul-Versions-Gotcha (echter Bug, beim Testen auf einem
+    echten Handy gefunden):** `@react-native-async-storage/async-storage`
+    war durch einzelne `npm install`-Läufe (u.a. beim Installieren von
+    `expo-notifications`) auf Version 3.1.1 gedriftet, während dieses
+    Expo SDK 2.2.0 erwartet – die Folge war `AsyncStorageError: Native
+    module is null, cannot access legacy storage` in Expo Go (Expo Go
+    bringt die zur SDK-Version passende native Modul-Version mit; eine
+    JS-Seite, die davon per Major-Version abweicht, findet ihr
+    natives Gegenstück nicht mehr). Behoben mit `npx expo install
+    --fix` (gleicht alle Pakete auf die vom installierten Expo-SDK
+    erwarteten Versionen ab, nicht nur async-storage). **Merke:** nach
+    dem Hinzufügen/Ändern von Paketen (gerade wenn dabei `npm install`
+    statt `npx expo install <paket>` lief) `npx expo install --check`
+    laufen lassen, um genau diese Drift früh zu erkennen.
   - Env-Variablen: `EXPO_PUBLIC_`-Präfix nötig, damit Werte im Client
     verfügbar sind. Die `.env` muss in `kegelclub-app/` liegen (Expo
     lädt sie nur aus dem eigenen Projekt-Root, nicht aus dem Repo-Root)
@@ -1096,8 +1110,22 @@ genau wie in `kasse.tsx`.
   CORS-Einschränkung beim Versand) und beide best-effort
   (try/catch, schlucken jeden Fehler) – dürfen die eigentliche
   App-Aktion (Terminliste laden, Termin anlegen) nie blockieren.
-- `kegelclub-app/src/app/(tabs)/` – ursprüngliches Expo-Router-Tabs-Template
-  (Home/Explore), unverändert bis auf den Umzug in die `(tabs)`-Gruppe.
+- `kegelclub-app/src/app/(tabs)/` – Expo-Router-Tabs-Template
+  (Home/Explore), `explore.tsx` unverändert. `index.tsx` (der Screen
+  hinter dem Root-Pfad `/`) ist **kein** Template-Screen mehr: prüft
+  beim App-Start Session (`supabase.auth.getSession()`) + Club-
+  Mitgliedschaft (`getCurrentMember()`) und leitet per `<Redirect>`
+  direkt weiter – kein Login → `/login`, eingeloggt ohne Club →
+  `/create-club`, eingeloggt mit Club → `/events`. Vorher landete man
+  hier auf dem unbenutzten "Welcome to Expo"-Template ohne jeden Weg
+  zur eigentlichen App (aufgefallen beim Testen auf einem echten
+  Handy über Expo Go, wo es – anders als im Browser – keine URL-Leiste
+  gibt, um manuell zu `/login` zu navigieren). Bis die Weiterleitung
+  feststeht, zeigt der Screen nur einen `ActivityIndicator`; die
+  NativeTabs-Leiste (Home/Explore) blitzt dabei kurz auf, da
+  `(tabs)/_layout.tsx` (`AppTabs`) weiterhin alle Screens der Gruppe
+  umschließt – für den sehr kurzen, praktisch nicht wahrnehmbaren
+  Moment bis zur Weiterleitung bewusst nicht weiter aufgeräumt.
 
 Damit sind die Pfade Auth → Club anlegen → RLS-geschütztes Schreiben,
 Auth → Club per Einladungscode beitreten, Kegelabend anlegen →
