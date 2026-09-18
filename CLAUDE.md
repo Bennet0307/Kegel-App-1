@@ -653,14 +653,62 @@ Liegen in `supabase/migrations/`, chronologisch:
     schließt das anlegende Mitglied korrekt aus und findet die
     Push-Tokens der übrigen Mitglieder – der eigentliche
     Versand-Request scheitert dann wie beschrieben am CORS (erwartet).
+29. **`guest_players`** – Gastkegler (Idee aus "Offene Punkte"/Kern-
+    Datenmodell umgesetzt): Admin/Kassierer können für einen
+    einzelnen Termin einen Gastkegler ohne eigenes Konto einladen.
+    Bewusst als `member`-Zeile mit der schon seit Migration 1
+    vorgesehenen, aber bis jetzt nie genutzten Rolle `'gast'`
+    umgesetzt statt einer komplett separaten Tabelle: dadurch
+    funktionieren alle bestehenden Spiel-/Strafen-/Kassen-RPCs
+    (`record_game_scores`, `book_freitext_game`, `book_zehner_game`,
+    `record_event_penalties`, `check_in`) sofort auch für Gastkegler,
+    ohne dort irgendetwas ändern zu müssen – sie nehmen ohnehin nur
+    eine `member_id` entgegen. `member.user_id` ist dafür jetzt
+    `nullable` (Gäste haben keinen `auth.users`-Eintrag); neue Spalte
+    `member.guest_event_id` (nur bei `role = 'gast'` gesetzt, per
+    Check-Constraint erzwungen) verknüpft den Gast mit "seinem"
+    Termin. Neue RPC `invite_guest(p_event_id, p_display_name)`
+    (Admin/Kassierer, security definer statt einer Erweiterung von
+    `member_write_admin`, das bewusst weiterhin nur `admin` für
+    reguläre Mitgliederverwaltung erlaubt) legt die `member`-Zeile an;
+    `remove_guest(p_member_id)` löscht sie wieder, aber **nur**, wenn
+    der Gast noch keine `score`/`penalty`/`transaction`/`attendance`/
+    `zehner_milestone`-Zeilen hat – sonst würde das rückwirkend
+    Kassenbuch-Historie zerstören.
+
+    In Mitglieder-Auswahllisten erscheint ein Gast nur beim Termin,
+    für den er eingeladen wurde: `check-in.tsx`, `enter-score.tsx` und
+    `enter-penalties.tsx` filtern jetzt mit `.or('role.neq.gast,
+    guest_event_id.eq.<eventId>')` statt nur nach `club_id`. Bewusst
+    **nicht** angepasst: `kasse.tsx` (Mitglieder-Chip-Liste für manuelle
+    Buchungen) und `statistik.tsx`/`termin-statistik.tsx` (Ranglisten)
+    – deren Mitglieder-Abfragen waren schon vorher unabhängig vom
+    Termin, Gastkegler tauchen dort deshalb ohne weitere Änderung
+    automatisch mit ihrem tatsächlichen Kegelgeld/Strafen-Anteil auf,
+    genau wie ein "normales" Mitglied. Live im Browser mit zwei
+    Terminen getestet: ein für Termin A eingeladener Gast erscheint
+    bei `enter-score.tsx` für Termin A, aber **nicht** für Termin B;
+    Große-Hausnummer-Ergebnis + automatisches Kegelgeld/Strafe für den
+    Gast korrekt in `kasse.tsx` gebucht (2,40 € = 2,00 € Kegelgeld +
+    0,40 € Strafe); `remove_guest` lehnt das Entfernen eines Gasts mit
+    bereits gebuchtem Ergebnis korrekt ab, entfernt einen frisch
+    eingeladenen (noch unbenutzten) Gast aber anstandslos.
+    **Zukünftige Idee, jetzt bewusst nicht umgesetzt** (Nutzerwunsch):
+    club-weit konfigurierbare, von der normalen Hausnummer-/
+    Strafenkatalog-Formel abweichende Strafregeln speziell für
+    Gastkegler, siehe "Offene Punkte".
 
 ## Kern-Datenmodell (Ausgangspunkt, teils noch nicht als Migration umgesetzt)
 
 - `club` – Mandant/Verein (id, name, invite_code, created_at) ✅ umgesetzt
 - `member` – Mitglied (id, club_id, user_id→auth.users, display_name,
-  role, joined_at, push_token) ✅ umgesetzt. `push_token` (Migration
-  28) ist der Expo-Push-Token des zuletzt registrierten Geräts, NULL =
-  keine Push.
+  role, joined_at, push_token, guest_event_id) ✅ umgesetzt.
+  `push_token` (Migration 28) ist der Expo-Push-Token des zuletzt
+  registrierten Geräts, NULL = keine Push. `user_id` ist seit
+  Migration 29 `nullable` und `guest_event_id` neu dazugekommen, für
+  Gastkegler (`role = 'gast'`, siehe Migration 29 und `guest` unten) –
+  bei echten Mitgliedern bleiben beide unverändert (user_id gesetzt,
+  guest_event_id NULL).
 - `event` – Termin (id, club_id, type, title, starts_at, location, status,
   series_id, series_occurrence_date, series_overridden, archived_at)
   ✅ umgesetzt. `status` ('geplant'/'abgeschlossen'/'abgesagt') ist seit
@@ -673,7 +721,10 @@ Liegen in `supabase/migrations/`, chronologisch:
 - `event_series` – Regeltermine/Serien-Kegelabende (id, club_id, title,
   location, frequency, interval_weeks, weekday, monthly_occurrence,
   time_of_day, starts_on, active) ✅ umgesetzt (Migration 20).
-- `guest` – Gastkegler ohne Konto — noch offen
+- `guest` – Gastkegler ohne Konto ✅ umgesetzt (Migration 29), aber
+  **keine eigene Tabelle**: ein Gastkegler ist eine `member`-Zeile mit
+  `role = 'gast'` und gesetztem `guest_event_id` (siehe `member`
+  oben und Migration 29 für die Begründung).
 - `attendance` – Zu-/Absage pro Event und Mitglied (id, event_id,
   member_id, status, responded_at, checked_in_at) ✅ umgesetzt. Die
   echte "war wirklich da"-Anwesenheitserfassung ist seit Migration 24
@@ -860,6 +911,16 @@ genau wie in `kasse.tsx`.
   zusätzlich `security definer` die automatische Verspätungsstrafe
   (Replace-Muster über `transaction.late_checkin_attendance_id`) neu
   berechnen muss, was ein normaler Member per RLS nicht dürfte.
+  Zusätzlich (Migration 29) eine "Gastkegler"-Sektion: Liste der für
+  genau diesen Termin eingeladenen Gäste (`role = 'gast'` +
+  `guest_event_id` = dieser Termin) mit "Entfernen" (zwei Taps,
+  ruft `remove_guest`, schlägt mit Fehlermeldung fehl, wenn der Gast
+  schon Ergebnisse/Buchungen hat), darunter ein Namensfeld +
+  "Einladen" (ruft `invite_guest`). Die Mitglieder-Abfrage filtert
+  seitdem zusätzlich mit `.or('role.neq.gast,
+  guest_event_id.eq.<eventId>')`, damit für andere Termine
+  eingeladene Gäste hier nicht auftauchen; ein Gast wird in der
+  Mitgliederliste zusätzlich mit "(Gast)" markiert.
 - `kegelclub-app/src/app/announcements.tsx` – Ankündigungen (Migration
   27), verlinkt von `events.tsx`. Alle Mitglieder sehen die Liste
   (neueste zuerst, Titel/Text/Autor/Datum). Admin/Kassierer sehen
@@ -942,7 +1003,10 @@ genau wie in `kasse.tsx`.
   garantiert übereinstimmen). Ruft `record_zehner_game`/
   `update_zehner_game`; beim Bearbeiten werden zusätzlich die
   bestehenden `zehner_milestone`-Zeilen des Spiels geladen und
-  vorausgefüllt.
+  vorausgefüllt. Die Mitglieder-Abfrage schließt seit Migration 29
+  Gastkegler ein, die für dieses `eventId` eingeladen wurden (siehe
+  `check-in.tsx`) – sie erscheinen dadurch wie normale Mitglieder in
+  allen vier Spieltyp-Formularen.
 - `kegelclub-app/src/app/kasse.tsx` – Admin/Kassierer sehen den
   Gesamtbetrag aller Mitglieder (aus `transaction` client-seitig
   aufsummiert, `einzahlung`/`kegelgeld`/`strafe` positiv), reguläre
@@ -1006,7 +1070,9 @@ genau wie in `kasse.tsx`.
   Zeilen des Termins zum Vorausfüllen (unterstützt Korrektur). Speichern
   ruft immer `record_event_penalties` (Delete-und-Neu-Buchen, dieselbe
   RPC für Erst- und Korrekturerfassung). Ohne Strafarten im Club zeigt
-  die Seite einen Hinweis, zuerst den Strafenkatalog zu befüllen.
+  die Seite einen Hinweis, zuerst den Strafenkatalog zu befüllen. Die
+  Mitglieder-Abfrage schließt seit Migration 29 ebenfalls für dieses
+  `eventId` eingeladene Gastkegler ein (siehe `check-in.tsx`).
 - `kegelclub-app/src/app/statistik.tsx` – Club-weite Statistik/
   Ranglisten in vier Abschnitten, mit **Zeitraum-Filter** oben auf der
   Seite (Idee aus "Offene Punkte" umgesetzt): drei Modus-Buttons
@@ -1181,8 +1247,11 @@ regulärem Mitglied) gegen die lokale Supabase-Instanz getestet.
    Push – Grundfunktion (Push sofort beim Anlegen eines neuen
    Kegelabends/Regeltermins, siehe Migration 28; Erinnerung vor dem
    Termin selbst sowie Versand auch bei Anlage über die Web-Oberfläche
-   noch offen, siehe "Offene Punkte"). Noch offen: weitere Spieltypen,
-   Live-Tafelmodus (Realtime).
+   noch offen, siehe "Offene Punkte"), ✅ Gastkegler – temporär für
+   einen einzelnen Termin einladbar (Migration 29; club-weit
+   abweichende Strafregeln für Gäste noch offen, siehe "Offene
+   Punkte"). Noch offen: weitere Spieltypen, Live-Tafelmodus
+   (Realtime).
 4. **Phase 3 – Finanzen & Turniere:** SEPA-XML-Export (Edge Function),
    Beitrags-/Rechnungswesen, Mannschaften/Turniere, Offline-Sync
    ausbauen, App-Store-Release.
@@ -1203,6 +1272,17 @@ regulärem Mitglied) gegen die lokale Supabase-Instanz getestet.
 
 ## Offene Punkte / noch nicht entschieden
 
+- **Club-weite Strafregeln speziell für Gastkegler** (Idee, noch nicht
+  umgesetzt, auf Nutzerwunsch bei Migration 29 zurückgestellt): aktuell
+  gelten für Gastkegler exakt dieselben Formeln/Sätze wie für echte
+  Mitglieder (Hausnummer-Strafformel, Strafenkatalog, 10er-Spiel –
+  alles über `club.*`-Einstellungen, ohne Unterscheidung nach Rolle).
+  Ein Club könnte aber z.B. für Gäste einen anderen (oft höheren)
+  Kegelgeld- oder Strafsatz wollen. Würde vermutlich club-weite
+  `club.gast_*`-Einstellungsspalten analog zu den bestehenden
+  `hausnummer_penalty_*`/`zehner_*`-Mustern brauchen, plus in den
+  jeweiligen `book_*`-Funktionen eine Fallunterscheidung nach
+  `member.role = 'gast'`.
 - **Push: Erinnerung vor dem Termin + Versand von Web aus** (Idee,
   noch nicht umgesetzt, auf Nutzerwunsch zurückgestellt bei Migration
   28): aktuell löst nur das *Anlegen* eines Kegelabends/Regeltermins

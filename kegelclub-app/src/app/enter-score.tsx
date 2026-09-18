@@ -82,6 +82,7 @@ export default function EnterScoreScreen() {
           .from('member')
           .select('id, display_name')
           .eq('club_id', currentMember.club_id)
+          .or(`role.neq.gast,guest_event_id.eq.${eventId ?? ''}`)
           .order('display_name', { ascending: true }),
         supabase
           .from('club')

@@ -31,10 +31,13 @@ export default function CheckInScreen() {
 
   const [eventTitle, setEventTitle] = useState('');
   const [eventDate, setEventDate] = useState(''); // JJJJ-MM-TT, für die Kombination mit der eingegebenen Uhrzeit
-  const [members, setMembers] = useState<{ id: string; display_name: string }[]>([]);
+  const [members, setMembers] = useState<{ id: string; display_name: string; role: string }[]>([]);
   const [attendanceStatus, setAttendanceStatus] = useState<Record<string, AttendanceStatus>>({});
   const [checkedIn, setCheckedIn] = useState<Record<string, string | null>>({});
   const [timeInputs, setTimeInputs] = useState<Record<string, string>>({});
+  const [newGuestName, setNewGuestName] = useState('');
+  const [invitingGuest, setInvitingGuest] = useState(false);
+  const [confirmingRemoveGuestId, setConfirmingRemoveGuestId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -66,7 +69,12 @@ export default function CheckInScreen() {
     setEventDate(`${startsAt.getFullYear()}-${pad(startsAt.getMonth() + 1)}-${pad(startsAt.getDate())}`);
 
     const [{ data: memberRows }, { data: attendanceRows }] = await Promise.all([
-      supabase.from('member').select('id, display_name').eq('club_id', eventRow.club_id).order('display_name'),
+      supabase
+        .from('member')
+        .select('id, display_name, role')
+        .eq('club_id', eventRow.club_id)
+        .or(`role.neq.gast,guest_event_id.eq.${eventId}`)
+        .order('display_name'),
       supabase.from('attendance').select('member_id, status, checked_in_at').eq('event_id', eventId),
     ]);
 
@@ -134,6 +142,41 @@ export default function CheckInScreen() {
     applyCheckIn(memberId, combined.toISOString());
   }
 
+  async function handleInviteGuest() {
+    if (!newGuestName.trim()) return;
+
+    setInvitingGuest(true);
+    setError(null);
+
+    const { error: rpcError } = await supabase.rpc('invite_guest', {
+      p_event_id: eventId,
+      p_display_name: newGuestName.trim(),
+    });
+
+    setInvitingGuest(false);
+
+    if (rpcError) {
+      setError(rpcError.message);
+      return;
+    }
+
+    setNewGuestName('');
+    load();
+  }
+
+  async function handleRemoveGuest(memberId: string) {
+    const { error: rpcError } = await supabase.rpc('remove_guest', { p_member_id: memberId });
+
+    setConfirmingRemoveGuestId(null);
+
+    if (rpcError) {
+      setError(rpcError.message);
+      return;
+    }
+
+    load();
+  }
+
   if (loading) {
     return (
       <ThemedView style={styles.container}>
@@ -161,7 +204,10 @@ export default function CheckInScreen() {
             return (
               <ThemedView key={memberRow.id} type="backgroundElement" style={styles.memberCard}>
                 <ThemedView style={styles.row}>
-                  <ThemedText>{memberRow.display_name}</ThemedText>
+                  <ThemedText>
+                    {memberRow.display_name}
+                    {memberRow.role === 'gast' ? ' (Gast)' : ''}
+                  </ThemedText>
                   <ThemedText type="small" themeColor="textSecondary">
                     {STATUS_LABELS[status]}
                     {checkedInAt ? ` · eingecheckt ${formatTime(checkedInAt)}` : ''}
@@ -207,6 +253,47 @@ export default function CheckInScreen() {
           {members.length === 0 && (
             <ThemedText themeColor="textSecondary">Keine Mitglieder gefunden.</ThemedText>
           )}
+
+          <ThemedText type="smallBold" style={styles.sectionSpacing}>
+            Gastkegler
+          </ThemedText>
+
+          {members
+            .filter((memberRow) => memberRow.role === 'gast')
+            .map((memberRow) => (
+              <ThemedView key={memberRow.id} style={styles.row}>
+                <ThemedText type="small">{memberRow.display_name}</ThemedText>
+                <Pressable
+                  onPress={() =>
+                    confirmingRemoveGuestId === memberRow.id
+                      ? handleRemoveGuest(memberRow.id)
+                      : setConfirmingRemoveGuestId(memberRow.id)
+                  }>
+                  <ThemedText type="small" style={styles.deleteLink}>
+                    {confirmingRemoveGuestId === memberRow.id ? 'Wirklich entfernen?' : 'Entfernen'}
+                  </ThemedText>
+                </Pressable>
+              </ThemedView>
+            ))}
+
+          <ThemedView style={styles.actionsRow}>
+            <TextInput
+              value={newGuestName}
+              onChangeText={setNewGuestName}
+              placeholder="Name des Gastkeglers"
+              placeholderTextColor={theme.textSecondary}
+              style={[styles.guestInput, { color: theme.text, backgroundColor: theme.backgroundElement }]}
+            />
+            {invitingGuest ? (
+              <ActivityIndicator />
+            ) : (
+              <Pressable
+                style={[styles.actionButton, { backgroundColor: theme.backgroundElement }]}
+                onPress={handleInviteGuest}>
+                <ThemedText type="small">Einladen</ThemedText>
+              </Pressable>
+            )}
+          </ThemedView>
         </SafeAreaView>
       </ScrollView>
     </ThemedView>
@@ -233,6 +320,9 @@ const styles = StyleSheet.create({
   title: {
     textAlign: 'center',
     marginBottom: Spacing.two,
+  },
+  sectionSpacing: {
+    marginTop: Spacing.two,
   },
   error: {
     color: '#d33',
@@ -261,6 +351,13 @@ const styles = StyleSheet.create({
     paddingHorizontal: Spacing.two,
     fontSize: 14,
     textAlign: 'center',
+  },
+  guestInput: {
+    flex: 1,
+    height: 40,
+    borderRadius: Spacing.two,
+    paddingHorizontal: Spacing.two,
+    fontSize: 14,
   },
   actionButton: {
     height: 40,
