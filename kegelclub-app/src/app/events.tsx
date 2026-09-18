@@ -10,6 +10,7 @@ import { useTheme } from '@/hooks/use-theme';
 import { computeKingCrowns, type TieMode } from '@/lib/kingSurcharge';
 import { getCurrentMember, type CurrentMember } from '@/lib/member';
 import { formatEuro } from '@/lib/money';
+import { registerForPushNotificationsAsync } from '@/lib/pushNotifications';
 import { supabase } from '@/lib/supabase';
 import { computeZehnerPenalties } from '@/lib/zehnerSpiel';
 
@@ -102,6 +103,10 @@ export default function EventsScreen() {
       return;
     }
     setMember(currentMember);
+
+    // Fire-and-forget: blockiert das Laden der Terminliste nicht, siehe
+    // pushNotifications.ts (best-effort, u.a. auf Web ein no-op).
+    registerForPushNotificationsAsync();
 
     const staff = currentMember.role === 'admin' || currentMember.role === 'kassierer';
 

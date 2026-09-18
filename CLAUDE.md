@@ -51,7 +51,12 @@ Zielplattformen: **Mobile (iOS/Android) und Web**, eine gemeinsame Codebase.
     kein Redux-Overhead für dieses Projektformat.
   - Builds/Releases: **EAS Build** (Cloud-Build, kein lokales
     Xcode/Android-Studio-Setup nötig für Releases).
-  - Push: `expo-notifications` (Abstraktion über FCM/APNs).
+  - Push: `expo-notifications` (Abstraktion über FCM/APNs) ✅ Grundfunktion
+    umgesetzt, siehe Migration 28 und App-Code (`lib/pushNotifications.ts`).
+    Braucht ein per `eas init`/`eas build:configure` angelegtes EAS-Projekt
+    (`app.json` → `extra.eas.projectId`) für echte Push-Tokens – bisher
+    noch nicht angelegt (kein `eas.json` im Repo), bis dahin bricht die
+    Token-Registrierung auf echten Geräten früh ab (abgefangen, siehe dort).
   - Env-Variablen: `EXPO_PUBLIC_`-Präfix nötig, damit Werte im Client
     verfügbar sind. Die `.env` muss in `kegelclub-app/` liegen (Expo
     lädt sie nur aus dem eigenen Projekt-Root, nicht aus dem Repo-Root)
@@ -591,12 +596,57 @@ Liegen in `supabase/migrations/`, chronologisch:
     reguläres Mitglied sieht dieselbe Ankündigung, aber weder
     Erfassungsformular noch Bearbeiten-/Löschen-Links (RLS +
     `isStaff`-Check greifen beide korrekt).
+28. **`push_notifications`** – Terminplanung mit Push, Grundfunktion
+    (Nutzerwunsch: nur sofortige Push beim Anlegen eines neuen
+    Kegelabends/Regeltermins; eine zeitgesteuerte Erinnerung vor dem
+    Termin selbst bewusst zurückgestellt, siehe "Offene Punkte" – die
+    bräuchte einen Hintergrund-Job statt eines simplen Client-Aufrufs).
+    Neue Spalte `member.push_token text` (ein Gerätetoken pro
+    Mitglied, keine Multi-Geräte-Tabelle – einfachste erste Version,
+    bei Login auf neuem Gerät wird der alte Token überschrieben). Neue
+    RPC `register_push_token(p_token)`: da `member` nur per
+    `member_write_admin` beschreibbar ist (kein "eigene Zeile
+    bearbeiten"-Recht für reguläre Mitglieder), erlaubt diese
+    security-definer-Funktion gezielt nur das Setzen des eigenen
+    `push_token` (`where user_id = auth.uid()`), ohne eine generische
+    Policy einzuführen, die versehentlich auch `role`/`display_name`
+    für Selbst-Änderungen öffnen würde. Versand läuft **direkt vom
+    Client** gegen Expo's öffentlichen Push-Endpunkt
+    (`https://exp.host/--/api/v2/push/send`, nimmt Gerätetokens ohne
+    Server-Auth entgegen) – bewusst ohne Edge Function, da für die
+    "nur bei Anlage"-Variante kein Hintergrund-Trigger nötig ist.
+    **Live im Browser gefundene Einschränkung:** dieser direkte
+    Client-Aufruf funktioniert nur auf nativen Plattformen – aus einer
+    Web-Session blockiert der Browser den Aufruf per CORS (Expo's
+    Endpunkt liefert keinen `Access-Control-Allow-Origin`-Header,
+    bestätigt durch einen echten CORS-Fehler beim Testen). Ein Termin,
+    der über die Web-Oberfläche angelegt wird, löst deshalb aktuell
+    **keine** Push aus (clientseitig in `sendNewEventPush()` per
+    `Platform.OS === 'web'` übersprungen, um wiederholte
+    fehlschlagende Versuche/Konsolen-Fehler zu vermeiden) – nur ein
+    Anlegen aus der nativen App sendet tatsächlich. Für Web bräuchte es
+    einen Server/Edge Function als CORS-Proxy, siehe "Offene Punkte".
+    Registrierung (`registerForPushNotificationsAsync()`) ebenfalls nur
+    nativ (Permission-Anfrage, Android-Notification-Channel, Token via
+    `getExpoPushTokenAsync()`), auf Web und bei jedem sonstigen Fehler
+    (kein EAS-Projekt konfiguriert, Berechtigung verweigert, Simulator
+    ohne Push-Fähigkeit) still abgefangen – rein best-effort, darf die
+    App nie blockieren. Live im Browser verifiziert (soweit ohne echtes
+    Gerät möglich): Web bleibt beim Laden von `events.tsx` fehlerfrei
+    (Registrierung no-op), `register_push_token`-RPC setzt den Token
+    korrekt (per direktem REST-Aufruf mit echtem Auth-Token
+    nachgestellt), die Empfänger-Query in `sendNewEventPush()`
+    schließt das anlegende Mitglied korrekt aus und findet die
+    Push-Tokens der übrigen Mitglieder – der eigentliche
+    Versand-Request scheitert dann wie beschrieben am CORS (erwartet).
 
 ## Kern-Datenmodell (Ausgangspunkt, teils noch nicht als Migration umgesetzt)
 
 - `club` – Mandant/Verein (id, name, invite_code, created_at) ✅ umgesetzt
 - `member` – Mitglied (id, club_id, user_id→auth.users, display_name,
-  role, joined_at) ✅ umgesetzt
+  role, joined_at, push_token) ✅ umgesetzt. `push_token` (Migration
+  28) ist der Expo-Push-Token des zuletzt registrierten Geräts, NULL =
+  keine Push.
 - `event` – Termin (id, club_id, type, title, starts_at, location, status,
   series_id, series_occurrence_date, series_overridden, archived_at)
   ✅ umgesetzt. `status` ('geplant'/'abgeschlossen'/'abgesagt') ist seit
@@ -776,7 +826,10 @@ genau wie in `kasse.tsx`.
   die RPC `check_in` auf (statt eines direkten `upsert` auf
   `attendance`, siehe Migration 24) – nötig, weil dieselbe RPC danach
   die automatische Verspätungsstrafe neu berechnet (siehe Migration
-  25).
+  25). Ruft beim Laden außerdem (fire-and-forget, blockiert die
+  Terminliste nicht) `registerForPushNotificationsAsync()` auf
+  (Migration 28) – auf Web ein No-op, auf nativen Plattformen fragt
+  das Berechtigung an und registriert den Push-Token.
 - `kegelclub-app/src/app/check-in.tsx` – Admin/Kassierer sehen alle
   Mitglieder des Clubs mit RSVP-Status und Check-in-Zeit für den
   gegebenen Termin (Route-Param `eventId`) – ermöglicht Einchecken für
@@ -829,7 +882,12 @@ genau wie in `kasse.tsx`.
   Uhrzeit bewusst über lokale `Date`-Getter (`getFullYear`/`getHours`/…)
   statt über `toISOString()` gebildet – letzteres liefert UTC und zeigte
   im Formular eine falsche (um die Zeitzone verschobene) Uhrzeit an,
-  echter Bug, live im Browser gefunden und gefixt.
+  echter Bug, live im Browser gefunden und gefixt. Nach erfolgreichem
+  Anlegen (Einzeltermin oder Regeltermin, **nicht** beim Bearbeiten/
+  Verschieben) ruft `handleSave()` `sendNewEventPush()` auf (Migration
+  28) – Push "Neuer Kegelabend"/"Neuer Regeltermin" an alle
+  Club-Mitglieder außer dem anlegenden Mitglied selbst, fire-and-forget
+  vor dem `router.replace('/events')`.
 - `kegelclub-app/src/app/enter-score.tsx` – Admin/Kassierer wählen
   Kleine/Große Hausnummer und tragen pro Mitglied drei Ziffern
   (Hunderter/Zehner/Einer) ein, die zur 3-stelligen Hausnummer
@@ -1026,6 +1084,18 @@ genau wie in `kasse.tsx`.
   `termin-statistik.tsx` (Anzeige aus dem club-weit lesbaren
   `zehner_milestone`, ohne `transaction` lesen zu müssen – siehe
   `kingSurcharge.ts` für dieselbe Motivation).
+- `kegelclub-app/src/lib/pushNotifications.ts` – Terminplanung mit
+  Push (Migration 28): `registerForPushNotificationsAsync()`
+  (Berechtigung anfragen, Android-Notification-Channel anlegen,
+  `Notifications.getExpoPushTokenAsync()`, Token per RPC
+  `register_push_token` speichern) und `sendNewEventPush(clubId,
+  excludeMemberId, title, body)` (Empfänger-Tokens der übrigen
+  Club-Mitglieder laden, `POST` an Expo's öffentlichen
+  Push-Send-Endpunkt). Beide Funktionen sind auf Web ein No-op
+  (`Platform.OS === 'web'`, siehe Migration 28 für die live gefundene
+  CORS-Einschränkung beim Versand) und beide best-effort
+  (try/catch, schlucken jeden Fehler) – dürfen die eigentliche
+  App-Aktion (Terminliste laden, Termin anlegen) nie blockieren.
 - `kegelclub-app/src/app/(tabs)/` – ursprüngliches Expo-Router-Tabs-Template
   (Home/Explore), unverändert bis auf den Umzug in die `(tabs)`-Gruppe.
 
@@ -1079,8 +1149,12 @@ regulärem Mitglied) gegen die lokale Supabase-Instanz getestet.
    den Club-Einstellungen), ✅ "10er-Spiel" als vierter Spieltyp
    (gemeinsame laufende Pin-Summe, nach Zehnerwert gestaffelte Strafe),
    ✅ Ankündigungen (letzter noch fehlender Kernbereich aus dem
-   ursprünglichen Projektziel, siehe Migration 27). Noch offen: weitere
-   Spieltypen, Terminplanung mit Push, Live-Tafelmodus (Realtime).
+   ursprünglichen Projektziel, siehe Migration 27), ✅ Terminplanung mit
+   Push – Grundfunktion (Push sofort beim Anlegen eines neuen
+   Kegelabends/Regeltermins, siehe Migration 28; Erinnerung vor dem
+   Termin selbst sowie Versand auch bei Anlage über die Web-Oberfläche
+   noch offen, siehe "Offene Punkte"). Noch offen: weitere Spieltypen,
+   Live-Tafelmodus (Realtime).
 4. **Phase 3 – Finanzen & Turniere:** SEPA-XML-Export (Edge Function),
    Beitrags-/Rechnungswesen, Mannschaften/Turniere, Offline-Sync
    ausbauen, App-Store-Release.
@@ -1101,6 +1175,18 @@ regulärem Mitglied) gegen die lokale Supabase-Instanz getestet.
 
 ## Offene Punkte / noch nicht entschieden
 
+- **Push: Erinnerung vor dem Termin + Versand von Web aus** (Idee,
+  noch nicht umgesetzt, auf Nutzerwunsch zurückgestellt bei Migration
+  28): aktuell löst nur das *Anlegen* eines Kegelabends/Regeltermins
+  eine Push aus, und nur, wenn die anlegende Person die native App
+  nutzt (Web ist per CORS blockiert, siehe Migration 28). Beides
+  bräuchte dieselbe neue Infrastruktur: eine Supabase Edge Function,
+  die entweder (a) zeitgesteuert per `pg_cron` X Stunden/Tage vor
+  `event.starts_at` prüft und dann Erinnerungen verschickt, oder (b)
+  als serverseitiger Proxy für `sendNewEventPush()` fungiert (kein
+  CORS-Problem von einer Edge Function aus). `eas init` (EAS-Projekt
+  anlegen, siehe Tech-Stack) ist ohnehin Voraussetzung, damit echte
+  Push-Tokens überhaupt funktionieren – bisher nicht gemacht.
 - SEPA-Lastschrift-Anbindung im Detail (Gläubiger-ID, Mandatsverwaltung)
 - Ob/wann self-hosted Supabase (Hetzner) statt Managed Supabase nötig wird
 - Separate öffentliche Marketing-/Landingpage (Format noch offen)

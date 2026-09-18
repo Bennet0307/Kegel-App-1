@@ -9,6 +9,7 @@ import { Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
 import { dateToGermanString, germanDateToIso } from '@/lib/date';
 import { getCurrentMember } from '@/lib/member';
+import { sendNewEventPush } from '@/lib/pushNotifications';
 import { supabase } from '@/lib/supabase';
 
 type Frequency = 'woechentlich' | 'monatlich';
@@ -21,6 +22,10 @@ const FREQUENCIES: { value: Frequency; label: string }[] = [
 function isoWeekday(date: Date) {
   const day = date.getDay();
   return day === 0 ? 7 : day;
+}
+
+function pad(n: number) {
+  return String(n).padStart(2, '0');
 }
 
 const WEEKDAY_NAMES = ['', 'Montag', 'Dienstag', 'Mittwoch', 'Donnerstag', 'Freitag', 'Samstag', 'Sonntag'];
@@ -61,7 +66,6 @@ export default function CreateEventScreen() {
       }
 
       const startsAt = new Date(data.starts_at);
-      const pad = (n: number) => String(n).padStart(2, '0');
       setTitle(data.title);
       setDate(dateToGermanString(startsAt));
       setTime(`${pad(startsAt.getHours())}:${pad(startsAt.getMinutes())}`);
@@ -136,6 +140,13 @@ export default function CreateEventScreen() {
         return;
       }
 
+      sendNewEventPush(
+        member.club_id,
+        member.id,
+        'Neuer Kegelabend',
+        `${title} am ${dateToGermanString(startsAt)} um ${pad(startsAt.getHours())}:${pad(startsAt.getMinutes())} Uhr`,
+      );
+
       router.replace('/events');
       return;
     }
@@ -167,6 +178,13 @@ export default function CreateEventScreen() {
       setError(rpcError.message);
       return;
     }
+
+    sendNewEventPush(
+      member.club_id,
+      member.id,
+      'Neuer Regeltermin',
+      `${title} – ab ${dateToGermanString(startsAt)}`,
+    );
 
     router.replace('/events');
   }
