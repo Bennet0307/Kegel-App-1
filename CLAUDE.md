@@ -58,10 +58,12 @@ Zielplattformen: **Mobile (iOS/Android) und Web**, eine gemeinsame Codebase.
     `production`/Store-Distribution + `autoIncrement` +
     `environment: "production"` für EAS-Umgebungsvariablen). Aktueller
     Stand Richtung Produktivbetrieb (Ziel: nur der eigene Club, zuerst
-    iOS via TestFlight, siehe "Offene Punkte"): **noch kein** Apple
-    Developer Account und **noch kein** Cloud-Supabase-Projekt – beides
-    kann nur der Projektinhaber selbst anlegen (Zahlungsdaten/Identität),
-    blockiert aktuell den ersten `eas build --platform ios --profile
+    iOS via TestFlight, siehe "Produktivbetrieb (eigener Club) –
+    Fahrplan"): Cloud-Supabase-Projekt existiert bereits (Region
+    Frankfurt, Migrationen ausgerollt); **noch kein** Apple Developer
+    Account – kann nur der Projektinhaber selbst anlegen
+    (Zahlungsdaten/Identität), aktuell der einzige verbleibende Blocker
+    für den ersten `eas build --platform ios --profile
     production`/`eas submit`.
   - Push: `expo-notifications` (Abstraktion über FCM/APNs) ✅ Grundfunktion
     umgesetzt, siehe Migration 28 und App-Code (`lib/pushNotifications.ts`).
@@ -1332,37 +1334,52 @@ Bereits erledigt:
 - EAS-Projekt angelegt (`npx eas-cli login`/`init`, siehe Tech-Stack).
 - `kegelclub-app/eas.json` mit `development`/`preview`/`production`-
   Profilen (`production` = Store-Distribution für TestFlight, mit
-  `autoIncrement` und `environment: "production"` für später per
-  `eas env:set --environment production` zu setzende
-  `EXPO_PUBLIC_SUPABASE_*`-Variablen).
+  `autoIncrement` und `environment: "production"`).
+- Eigenes Platzhalter-App-Icon (weißer Kegel + roter Streifen auf
+  Blau, per SVG selbst entworfen und mit `sharp-cli` gerendert) ersetzt
+  die Expo-Template-Standardbilder (`icon.png`, Android-Adaptive-Icon-
+  Layer, `favicon.png`, `splash-icon.png`); der alte `ios.icon`-Verweis
+  auf das Icon-Composer-Bundle (`assets/expo.icon`) wurde aus `app.json`
+  entfernt (ungenutzt, gelöscht) – ein einziges PNG deckt jetzt auch iOS
+  ab.
+- **Cloud-Supabase-Projekt** angelegt ("Kegel-App", Ref
+  `znzhpqawevanxgkqpjin`, Region `eu-central-1`/Frankfurt, korrekt laut
+  Tech-Stack-Entscheidung). Per `supabase link --project-ref
+  znzhpqawevanxgkqpjin` verlinkt, alle 31 Migrationen per `supabase db
+  push` ausgerollt (verifiziert: `supabase migration list` zeigt 0
+  fehlende), Edge Function `send-push` per `supabase functions deploy
+  send-push` deployt. Smoke-Test bestanden: `GET /rest/v1/club` liefert
+  `200 []` (RLS aktiv, keine Daten sichtbar ohne echten Mitglieder-JWT),
+  `POST /functions/v1/send-push` antwortet (Validierungsfehler bei
+  leerem `tokens`-Array, JWT-Prüfung greift). `EXPO_PUBLIC_SUPABASE_URL`
+  (`https://znzhpqawevanxgkqpjin.supabase.co`) und `_ANON_KEY` (Legacy-
+  JWT-Format, gleiches Format wie lokal in `.env`) per `eas env:set` im
+  `production`-Environment hinterlegt.
+- **Noch zu tun (nicht mehr blockiert, aber noch nicht gemacht):** die
+  lokale `kegelclub-app/.env` zeigt weiterhin auf die lokale
+  Docker-Instanz – das ist für die lokale Entwicklung auch richtig so
+  (Tech-Stack: "identischer Client-Code gegen Cloud-/self-hosted
+  Projekt, nur URL/Keys wechseln"); die Cloud-Werte gelten nur über die
+  EAS-`production`-Umgebung für den TestFlight-Build, nicht für den
+  Dev-Server.
 
 Noch offen, jeweils nur vom Projektinhaber selbst durchführbar
 (Accounts/Zahlungsdaten):
 1. **Apple Developer Account** (developer.apple.com, 99 $/Jahr,
    Identitätsprüfung kann 1-2 Tage dauern) – Voraussetzung für
    `eas build --platform ios --profile production` und
-   `eas submit`/TestFlight.
-2. **Cloud-Supabase-Projekt** (Region Frankfurt, siehe Tech-Stack-
-   Begründung) statt der lokalen Docker-Instanz – sonst müssten PC +
-   Docker dauerhaft laufen und alle Clubmitglieder im selben WLAN
-   sein, unpraktisch für echten Betrieb. Dabei: alle 29 Migrationen
-   gegen die Cloud-Instanz ausführen (`supabase link` +
-   `supabase db push`), den Supabase-**AVV** (Art. 28 DSGVO, siehe
-   DSGVO-Hinweise) im Dashboard akzeptieren, danach
-   `EXPO_PUBLIC_SUPABASE_URL`/`_ANON_KEY` der Cloud-Instanz per
-   `eas env:set` für das `production`-Environment hinterlegen.
-3. Nach 1+2: App-Icon/Splash sind noch die Expo-Template-Standardbilder
-   (`assets/images/icon.png` u.a.) – für TestFlight-Tester (echte
-   Clubmitglieder) unprofessionell, sollten vor dem ersten Build durch
-   ein eigenes Icon ersetzt werden.
-4. Erster Build: `eas build --platform ios --profile production`,
+   `eas submit`/TestFlight. Aktuell der einzige verbleibende Blocker.
+2. Supabase-**AVV** (Art. 28 DSGVO, siehe DSGVO-Hinweise) im Dashboard
+   des neuen Cloud-Projekts akzeptieren (Settings → Legal o.ä.) – noch
+   nicht bestätigt.
+3. Erster Build: `eas build --platform ios --profile production`,
    danach `eas submit --platform ios` (lädt zu App Store Connect
    hoch); Club-Mitglieder als **externe Tester** in TestFlight
    einladen (interne Tester wären auf Mitglieder des eigenen
    Apple-Developer-Teams beschränkt) – das löst einmalig Apples
    leichtgewichtigen Beta-App-Review aus (i.d.R. <48h, deutlich
    schlankeres Verfahren als ein voller App-Store-Review).
-5. Ein einfaches, für Vereine formuliertes Datenschutz-Hinweisblatt für
+4. Ein einfaches, für Vereine formuliertes Datenschutz-Hinweisblatt für
    die Clubmitglieder (Art. 6 Abs. 1 lit. b DSGVO, siehe DSGVO-
    Hinweise) ist unabhängig von TestFlight/App Store ohnehin sinnvoll,
    sobald echte Mitgliederdaten verarbeitet werden – noch nicht
