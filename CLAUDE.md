@@ -53,10 +53,15 @@ Zielplattformen: **Mobile (iOS/Android) und Web**, eine gemeinsame Codebase.
     Xcode/Android-Studio-Setup nötig für Releases).
   - Push: `expo-notifications` (Abstraktion über FCM/APNs) ✅ Grundfunktion
     umgesetzt, siehe Migration 28 und App-Code (`lib/pushNotifications.ts`).
-    Braucht ein per `eas init`/`eas build:configure` angelegtes EAS-Projekt
-    (`app.json` → `extra.eas.projectId`) für echte Push-Tokens – bisher
-    noch nicht angelegt (kein `eas.json` im Repo), bis dahin bricht die
-    Token-Registrierung auf echten Geräten früh ab (abgefangen, siehe dort).
+    Braucht ein per `eas init` angelegtes EAS-Projekt (`app.json` →
+    `extra.eas.projectId`) für echte Push-Tokens – per `npx eas-cli login`/
+    `npx eas-cli init` angelegt (`projectId af6c9530-4d63-4a49-b740-
+    c77a0d05f80d`, `owner: "bennet0307"`, beides jetzt in `app.json`; kein
+    separates `eas.json` nötig dafür, das wird erst für EAS **Builds**
+    gebraucht, siehe "Offene Punkte"). Auf einem echten iPhone mit Expo Go
+    (Live-Test bestätigt) funktioniert Push **ohne** Development Build –
+    anders als Android, wo Expo Go seit SDK 53 gar keine Remote-Push mehr
+    unterstützt (siehe Migration 28).
   - **Nativer Modul-Versions-Gotcha (echter Bug, beim Testen auf einem
     echten Handy gefunden):** `@react-native-async-storage/async-storage`
     war durch einzelne `npm install`-Läufe (u.a. beim Installieren von
@@ -664,6 +669,19 @@ Liegen in `supabase/migrations/`, chronologisch:
     übernimmt ohnehin das Betriebssystem unabhängig vom Handler.
     Mangels zweier echter Testgeräte nicht end-to-end verifizierbar,
     nur der unveränderte Web-Betrieb (Handler dort übersprungen).
+    **Nachträglich ergänzt (CORS-Einschränkung behoben):** die oben
+    beschriebene Web-Einschränkung (Versand nur aus der nativen App)
+    gilt seitdem nicht mehr – siehe die neue Supabase Edge Function
+    `send-push` (`supabase/functions/send-push/index.ts`) unter
+    App-Code. Live auf einem echten iPhone (Expo Go, per `eas init`
+    angelegtes EAS-Projekt) end-to-end verifiziert: `register_push_token`
+    setzt einen echten `ExponentPushToken[...]`, ein direkter Testaufruf
+    an die lokale Edge Function (`http://<LAN-IP>:61321/functions/v1/
+    send-push`) lieferte `{"status":"ok"}` von Expo zurück, und die
+    Push kam tatsächlich auf dem Gerät an (auch bei geschlossener App,
+    reine Betriebssystem-Zustellung über APNs) – unabhängig davon, ob
+    der auslösende `sendNewEventPush()`-Aufruf von einer nativen
+    Plattform oder aus dem Web kommt.
 29. **`guest_players`** – Gastkegler (Idee aus "Offene Punkte"/Kern-
     Datenmodell umgesetzt): Admin/Kassierer können für einen
     einzelnen Termin einen Gastkegler ohne eigenes Konto einladen.
@@ -1179,12 +1197,16 @@ genau wie in `kasse.tsx`.
   Push (Migration 28): `registerForPushNotificationsAsync()`
   (Berechtigung anfragen, Android-Notification-Channel anlegen,
   `Notifications.getExpoPushTokenAsync()`, Token per RPC
-  `register_push_token` speichern) und `sendNewEventPush(clubId,
+  `register_push_token` speichern) – bewusst weiterhin
+  `Platform.OS === 'web'`-No-op, da es auf Web kein Äquivalent zu
+  einem nativen Gerätetoken gibt. `sendNewEventPush(clubId,
   excludeMemberId, title, body)` (Empfänger-Tokens der übrigen
-  Club-Mitglieder laden, `POST` an Expo's öffentlichen
-  Push-Send-Endpunkt). Beide Funktionen sind auf Web ein No-op
-  (`Platform.OS === 'web'`, siehe Migration 28 für die live gefundene
-  CORS-Einschränkung beim Versand) und beide best-effort
+  Club-Mitglieder laden, danach `supabase.functions.invoke('send-push',
+  ...)`) läuft dagegen seit der Edge Function `send-push` (siehe
+  App-Code unten) auf **allen** Plattformen inkl. Web – der direkte
+  Aufruf gegen Expo's Push-Endpunkt aus dem Browser scheiterte dort an
+  CORS (siehe Migration 28), die Edge Function als serverseitiger
+  Proxy hat dieses Problem nicht. Beide Funktionen bleiben best-effort
   (try/catch, schlucken jeden Fehler) – dürfen die eigentliche
   App-Aktion (Terminliste laden, Termin anlegen) nie blockieren. Auf
   Modulebene außerdem (nur nativ) ein einmaliger
@@ -1194,6 +1216,21 @@ genau wie in `kasse.tsx`.
   Handler zeigt `expo-notifications` sie dort u.U. gar nicht sichtbar
   an. Im Hintergrund/bei geschlossener App übernimmt unabhängig davon
   das Betriebssystem (APNs/FCM) die Zustellung, siehe Migration 28.
+- `supabase/functions/send-push/index.ts` – Deno-basierte Supabase Edge
+  Function, CORS-Proxy für Expo's Push-Send-Endpunkt
+  (`https://exp.host/--/api/v2/push/send`). Nimmt `{ tokens: string[],
+  title, body }` entgegen (die Tokens hat der Client bereits selbst über
+  die club-weit lesbare `member`-Tabelle aufgelöst) und leitet sie
+  serverseitig unverändert an Expo weiter – dort gibt es keine
+  CORS-Blockade, da der Request nicht aus einem Browser kommt. Läuft mit
+  dem Default `verify_jwt = true` (kein `eas.json`/Sonderkonfiguration
+  nötig): nur eingeloggte User können die Funktion aufrufen, kein
+  offenes Relay für Dritte – `supabase.functions.invoke(...)` aus
+  `pushNotifications.ts` hängt den Auth-Header automatisch an. Lokal
+  über die Supabase CLI (`edge_runtime` in `config.toml` bereits
+  aktiviert) ohne weiteren Deploy-Schritt verfügbar, sobald der Stack
+  läuft; Live-Test bestätigt (`{"status":"ok"}` von Expo, Push kam auf
+  einem echten iPhone an).
 - `kegelclub-app/src/app/(tabs)/` – Expo-Router-Tabs-Template
   (Home/Explore), `explore.tsx` unverändert. `index.tsx` (der Screen
   hinter dem Root-Pfad `/`) ist **kein** Template-Screen mehr: prüft
@@ -1301,18 +1338,20 @@ regulärem Mitglied) gegen die lokale Supabase-Instanz getestet.
   `hausnummer_penalty_*`/`zehner_*`-Mustern brauchen, plus in den
   jeweiligen `book_*`-Funktionen eine Fallunterscheidung nach
   `member.role = 'gast'`.
-- **Push: Erinnerung vor dem Termin + Versand von Web aus** (Idee,
-  noch nicht umgesetzt, auf Nutzerwunsch zurückgestellt bei Migration
-  28): aktuell löst nur das *Anlegen* eines Kegelabends/Regeltermins
-  eine Push aus, und nur, wenn die anlegende Person die native App
-  nutzt (Web ist per CORS blockiert, siehe Migration 28). Beides
-  bräuchte dieselbe neue Infrastruktur: eine Supabase Edge Function,
-  die entweder (a) zeitgesteuert per `pg_cron` X Stunden/Tage vor
-  `event.starts_at` prüft und dann Erinnerungen verschickt, oder (b)
-  als serverseitiger Proxy für `sendNewEventPush()` fungiert (kein
-  CORS-Problem von einer Edge Function aus). `eas init` (EAS-Projekt
-  anlegen, siehe Tech-Stack) ist ohnehin Voraussetzung, damit echte
-  Push-Tokens überhaupt funktionieren – bisher nicht gemacht.
+- **Push: Erinnerung vor dem Termin** (Idee, noch nicht umgesetzt, auf
+  Nutzerwunsch zurückgestellt bei Migration 28): aktuell löst nur das
+  *Anlegen* eines Kegelabends/Regeltermins eine Push aus, keine
+  zeitgesteuerte Erinnerung vor `event.starts_at` selbst. Der
+  Web-Versand-Teil dieser Idee ist inzwischen erledigt (siehe die Edge
+  Function `send-push`, Migration 28 "Nachträglich ergänzt" und
+  App-Code) – eine Erinnerung bräuchte trotzdem eine **neue**
+  Infrastruktur, da sie nicht durch einen Client-Aufruf ausgelöst
+  werden kann: eine zweite Edge Function, die zeitgesteuert per
+  `pg_cron` X Stunden/Tage vor `event.starts_at` prüft und dann
+  Erinnerungen verschickt (kann die bestehende `send-push`-Funktion für
+  den eigentlichen Versand wiederverwenden, bräuchte aber zusätzlich
+  den `SUPABASE_SERVICE_ROLE_KEY` als Secret, da ohne eingeloggten User
+  kein Auth-Header für `verify_jwt` existiert).
 - SEPA-Lastschrift-Anbindung im Detail (Gläubiger-ID, Mandatsverwaltung)
 - Ob/wann self-hosted Supabase (Hetzner) statt Managed Supabase nötig wird
 - Separate öffentliche Marketing-/Landingpage (Format noch offen)

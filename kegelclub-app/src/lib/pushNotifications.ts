@@ -55,19 +55,17 @@ export async function registerForPushNotificationsAsync() {
 
 // Benachrichtigt alle Mitglieder eines Clubs über einen neu
 // angelegten Kegelabend/Regeltermin (Nutzerwunsch: nur bei Anlage,
-// keine zeitgesteuerte Erinnerung vor dem Termin selbst). Läuft
-// direkt vom Client aus – Expo's Push-Send-Endpunkt braucht dafür
-// keinen Server/Edge Function, nimmt Gerätetokens direkt entgegen.
-// **Nur auf nativen Plattformen**: aus einer Web-Session heraus
-// blockiert der Browser den direkten Aufruf per CORS (Expo's
-// Push-Endpunkt setzt keinen Access-Control-Allow-Origin-Header,
-// live getestet) – ein Termin, der über die Web-Oberfläche angelegt
-// wird, löst deshalb aktuell keine Push aus, nur einer aus der
-// nativen App. Für Web bräuchte es einen Server/Edge Function als
-// Proxy, siehe "Offene Punkte".
+// keine zeitgesteuerte Erinnerung vor dem Termin selbst). Der
+// eigentliche Versand läuft über die Supabase Edge Function
+// `send-push` (supabase/functions/send-push) statt direkt vom Client
+// gegen Expo's Push-Endpunkt: ein direkter Browser-Aufruf scheiterte
+// dort an CORS (kein Access-Control-Allow-Origin-Header, live
+// getestet), die Edge Function läuft server-seitig und hat dieses
+// Problem nicht – funktioniert dadurch jetzt sowohl nativ als auch
+// aus der Web-Oberfläche. Die Tokens werden weiterhin hier im Client
+// aufgelöst (club-weit per RLS lesbar), die Edge Function reicht sie
+// nur unverändert an Expo weiter.
 export async function sendNewEventPush(clubId: string, excludeMemberId: string | null, title: string, body: string) {
-  if (Platform.OS === 'web') return;
-
   try {
     let query = supabase.from('member').select('id, push_token').eq('club_id', clubId).not('push_token', 'is', null);
     if (excludeMemberId) {
@@ -78,11 +76,7 @@ export async function sendNewEventPush(clubId: string, excludeMemberId: string |
     const tokens = (memberRows ?? []).map((row) => row.push_token).filter((token): token is string => Boolean(token));
     if (tokens.length === 0) return;
 
-    await fetch('https://exp.host/--/api/v2/push/send', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-      body: JSON.stringify(tokens.map((to) => ({ to, title, body, sound: 'default' }))),
-    });
+    await supabase.functions.invoke('send-push', { body: { tokens, title, body } });
   } catch {
     // Push-Versand ist best-effort; ein Fehler hier darf das Anlegen
     // des Termins nicht blockieren.
