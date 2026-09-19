@@ -4,6 +4,24 @@ import { Platform } from 'react-native';
 
 import { supabase } from '@/lib/supabase';
 
+// Legt fest, wie eine ankommende Push angezeigt wird, während die App
+// gerade im Vordergrund offen ist (ohne diesen Handler zeigt
+// expo-notifications sie im Vordergrund u.U. gar nicht sichtbar an –
+// im Hintergrund/bei geschlossener App übernimmt ohnehin das
+// Betriebssystem, unabhängig von diesem Handler). Einmalig beim
+// Laden dieses Moduls gesetzt, nicht bei jedem Aufruf von
+// registerForPushNotificationsAsync().
+if (Platform.OS !== 'web') {
+  Notifications.setNotificationHandler({
+    handleNotification: async () => ({
+      shouldShowBanner: true,
+      shouldShowList: true,
+      shouldPlaySound: true,
+      shouldSetBadge: false,
+    }),
+  });
+}
+
 // Push läuft über Expo's Push-Service und braucht einen echten
 // Gerätetoken (iOS/Android) – auf Web nicht in derselben Form
 // verfügbar, deshalb hier bewusst übersprungen (siehe lib/supabase.ts

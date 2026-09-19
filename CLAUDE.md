@@ -653,6 +653,17 @@ Liegen in `supabase/migrations/`, chronologisch:
     schließt das anlegende Mitglied korrekt aus und findet die
     Push-Tokens der übrigen Mitglieder – der eigentliche
     Versand-Request scheitert dann wie beschrieben am CORS (erwartet).
+    **Nachträglich ergänzt** (Nutzerfrage: "was fängt das bei anderen
+    Nutzern ab?" – Klarstellung: nichts im App-Code, das übernimmt
+    APNs/FCM auf Betriebssystem-Ebene, unabhängig davon, ob die App
+    läuft): `Notifications.setNotificationHandler(...)` in
+    `pushNotifications.ts`, einmalig beim Laden des Moduls gesetzt
+    (nur nativ). Ohne diesen Handler zeigt `expo-notifications` eine
+    ankommende Push u.U. nicht sichtbar an, **während die App im
+    Vordergrund offen ist** – im Hintergrund/bei geschlossener App
+    übernimmt ohnehin das Betriebssystem unabhängig vom Handler.
+    Mangels zweier echter Testgeräte nicht end-to-end verifizierbar,
+    nur der unveränderte Web-Betrieb (Handler dort übersprungen).
 29. **`guest_players`** – Gastkegler (Idee aus "Offene Punkte"/Kern-
     Datenmodell umgesetzt): Admin/Kassierer können für einen
     einzelnen Termin einen Gastkegler ohne eigenes Konto einladen.
@@ -1175,7 +1186,14 @@ genau wie in `kasse.tsx`.
   (`Platform.OS === 'web'`, siehe Migration 28 für die live gefundene
   CORS-Einschränkung beim Versand) und beide best-effort
   (try/catch, schlucken jeden Fehler) – dürfen die eigentliche
-  App-Aktion (Terminliste laden, Termin anlegen) nie blockieren.
+  App-Aktion (Terminliste laden, Termin anlegen) nie blockieren. Auf
+  Modulebene außerdem (nur nativ) ein einmaliger
+  `Notifications.setNotificationHandler(...)`-Aufruf: bestimmt, ob/wie
+  eine ankommende Push angezeigt wird, während die App gerade im
+  Vordergrund offen ist (Banner + Sound, kein Badge) – ohne diesen
+  Handler zeigt `expo-notifications` sie dort u.U. gar nicht sichtbar
+  an. Im Hintergrund/bei geschlossener App übernimmt unabhängig davon
+  das Betriebssystem (APNs/FCM) die Zustellung, siehe Migration 28.
 - `kegelclub-app/src/app/(tabs)/` – Expo-Router-Tabs-Template
   (Home/Explore), `explore.tsx` unverändert. `index.tsx` (der Screen
   hinter dem Root-Pfad `/`) ist **kein** Template-Screen mehr: prüft
