@@ -50,18 +50,24 @@ Zielplattformen: **Mobile (iOS/Android) und Web**, eine gemeinsame Codebase.
     TanStack Query für Server-State/Caching der Supabase-Queries) –
     kein Redux-Overhead für dieses Projektformat.
   - Builds/Releases: **EAS Build** (Cloud-Build, kein lokales
-    Xcode/Android-Studio-Setup nötig für Releases).
+    Xcode/Android-Studio-Setup nötig für Releases). EAS-Projekt per
+    `npx eas-cli login`/`npx eas-cli init` angelegt (`projectId
+    af6c9530-4d63-4a49-b740-c77a0d05f80d`, `owner: "bennet0307"`, beides
+    in `app.json`). `kegelclub-app/eas.json` mit den drei Standard-
+    Profilen (`development`/`preview`/`internal`-Distribution,
+    `production`/Store-Distribution + `autoIncrement` +
+    `environment: "production"` für EAS-Umgebungsvariablen). Aktueller
+    Stand Richtung Produktivbetrieb (Ziel: nur der eigene Club, zuerst
+    iOS via TestFlight, siehe "Offene Punkte"): **noch kein** Apple
+    Developer Account und **noch kein** Cloud-Supabase-Projekt – beides
+    kann nur der Projektinhaber selbst anlegen (Zahlungsdaten/Identität),
+    blockiert aktuell den ersten `eas build --platform ios --profile
+    production`/`eas submit`.
   - Push: `expo-notifications` (Abstraktion über FCM/APNs) ✅ Grundfunktion
     umgesetzt, siehe Migration 28 und App-Code (`lib/pushNotifications.ts`).
-    Braucht ein per `eas init` angelegtes EAS-Projekt (`app.json` →
-    `extra.eas.projectId`) für echte Push-Tokens – per `npx eas-cli login`/
-    `npx eas-cli init` angelegt (`projectId af6c9530-4d63-4a49-b740-
-    c77a0d05f80d`, `owner: "bennet0307"`, beides jetzt in `app.json`; kein
-    separates `eas.json` nötig dafür, das wird erst für EAS **Builds**
-    gebraucht, siehe "Offene Punkte"). Auf einem echten iPhone mit Expo Go
-    (Live-Test bestätigt) funktioniert Push **ohne** Development Build –
-    anders als Android, wo Expo Go seit SDK 53 gar keine Remote-Push mehr
-    unterstützt (siehe Migration 28).
+    Auf einem echten iPhone mit Expo Go (Live-Test bestätigt) funktioniert
+    Push **ohne** Development Build – anders als Android, wo Expo Go seit
+    SDK 53 gar keine Remote-Push mehr unterstützt (siehe Migration 28).
   - **Nativer Modul-Versions-Gotcha (echter Bug, beim Testen auf einem
     echten Handy gefunden):** `@react-native-async-storage/async-storage`
     war durch einzelne `npm install`-Läufe (u.a. beim Installieren von
@@ -1223,8 +1229,9 @@ genau wie in `kasse.tsx`.
   die club-weit lesbare `member`-Tabelle aufgelöst) und leitet sie
   serverseitig unverändert an Expo weiter – dort gibt es keine
   CORS-Blockade, da der Request nicht aus einem Browser kommt. Läuft mit
-  dem Default `verify_jwt = true` (kein `eas.json`/Sonderkonfiguration
-  nötig): nur eingeloggte User können die Funktion aufrufen, kein
+  dem Default `verify_jwt = true` (kein eigener `[functions.send-push]`-
+  Eintrag in `config.toml` nötig): nur eingeloggte User können die
+  Funktion aufrufen, kein
   offenes Relay für Dritte – `supabase.functions.invoke(...)` aus
   `pushNotifications.ts` hängt den Auth-Header automatisch an. Lokal
   über die Supabase CLI (`edge_runtime` in `config.toml` bereits
@@ -1299,10 +1306,10 @@ regulärem Mitglied) gegen die lokale Supabase-Instanz getestet.
    (gemeinsame laufende Pin-Summe, nach Zehnerwert gestaffelte Strafe),
    ✅ Ankündigungen (letzter noch fehlender Kernbereich aus dem
    ursprünglichen Projektziel, siehe Migration 27), ✅ Terminplanung mit
-   Push – Grundfunktion (Push sofort beim Anlegen eines neuen
+   Push – Grundfunktion, inkl. Versand über eine Edge Function auch bei
+   Anlage über die Web-Oberfläche (Push sofort beim Anlegen eines neuen
    Kegelabends/Regeltermins, siehe Migration 28; Erinnerung vor dem
-   Termin selbst sowie Versand auch bei Anlage über die Web-Oberfläche
-   noch offen, siehe "Offene Punkte"), ✅ Gastkegler – temporär für
+   Termin selbst noch offen, siehe "Offene Punkte"), ✅ Gastkegler – temporär für
    einen einzelnen Termin einladbar (Migration 29; club-weit
    abweichende Strafregeln für Gäste noch offen, siehe "Offene
    Punkte"). Noch offen: weitere Spieltypen, Live-Tafelmodus
@@ -1310,6 +1317,56 @@ regulärem Mitglied) gegen die lokale Supabase-Instanz getestet.
 4. **Phase 3 – Finanzen & Turniere:** SEPA-XML-Export (Edge Function),
    Beitrags-/Rechnungswesen, Mannschaften/Turniere, Offline-Sync
    ausbauen, App-Store-Release.
+
+## Produktivbetrieb (eigener Club) – Fahrplan
+
+Nutzerentscheidung (parallel zu Phase 3, nicht davon abhängig):
+zunächst **nur der eigene Kegelclub** soll die App produktiv nutzen,
+Verteilung über **TestFlight**, zuerst **nur iOS** (Android später ohne
+Architekturänderung ergänzbar). Kein öffentlicher App-Store-Release
+(kein Review-Prozess, keine öffentliche Datenschutzerklärung/
+Support-URL/Screenshots nötig – das wäre erst für "Öffentlich für
+beliebige Kegelclubs" relevant).
+
+Bereits erledigt:
+- EAS-Projekt angelegt (`npx eas-cli login`/`init`, siehe Tech-Stack).
+- `kegelclub-app/eas.json` mit `development`/`preview`/`production`-
+  Profilen (`production` = Store-Distribution für TestFlight, mit
+  `autoIncrement` und `environment: "production"` für später per
+  `eas env:set --environment production` zu setzende
+  `EXPO_PUBLIC_SUPABASE_*`-Variablen).
+
+Noch offen, jeweils nur vom Projektinhaber selbst durchführbar
+(Accounts/Zahlungsdaten):
+1. **Apple Developer Account** (developer.apple.com, 99 $/Jahr,
+   Identitätsprüfung kann 1-2 Tage dauern) – Voraussetzung für
+   `eas build --platform ios --profile production` und
+   `eas submit`/TestFlight.
+2. **Cloud-Supabase-Projekt** (Region Frankfurt, siehe Tech-Stack-
+   Begründung) statt der lokalen Docker-Instanz – sonst müssten PC +
+   Docker dauerhaft laufen und alle Clubmitglieder im selben WLAN
+   sein, unpraktisch für echten Betrieb. Dabei: alle 29 Migrationen
+   gegen die Cloud-Instanz ausführen (`supabase link` +
+   `supabase db push`), den Supabase-**AVV** (Art. 28 DSGVO, siehe
+   DSGVO-Hinweise) im Dashboard akzeptieren, danach
+   `EXPO_PUBLIC_SUPABASE_URL`/`_ANON_KEY` der Cloud-Instanz per
+   `eas env:set` für das `production`-Environment hinterlegen.
+3. Nach 1+2: App-Icon/Splash sind noch die Expo-Template-Standardbilder
+   (`assets/images/icon.png` u.a.) – für TestFlight-Tester (echte
+   Clubmitglieder) unprofessionell, sollten vor dem ersten Build durch
+   ein eigenes Icon ersetzt werden.
+4. Erster Build: `eas build --platform ios --profile production`,
+   danach `eas submit --platform ios` (lädt zu App Store Connect
+   hoch); Club-Mitglieder als **externe Tester** in TestFlight
+   einladen (interne Tester wären auf Mitglieder des eigenen
+   Apple-Developer-Teams beschränkt) – das löst einmalig Apples
+   leichtgewichtigen Beta-App-Review aus (i.d.R. <48h, deutlich
+   schlankeres Verfahren als ein voller App-Store-Review).
+5. Ein einfaches, für Vereine formuliertes Datenschutz-Hinweisblatt für
+   die Clubmitglieder (Art. 6 Abs. 1 lit. b DSGVO, siehe DSGVO-
+   Hinweise) ist unabhängig von TestFlight/App Store ohnehin sinnvoll,
+   sobald echte Mitgliederdaten verarbeitet werden – noch nicht
+   entworfen.
 
 ## Konventionen / Arbeitsweise
 
