@@ -1,5 +1,6 @@
-import { router, useLocalSearchParams } from 'expo-router';
-import { useState } from 'react';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { Redirect, router, useLocalSearchParams } from 'expo-router';
+import { useEffect, useState } from 'react';
 import { ActivityIndicator, Pressable, StyleSheet, TextInput } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
@@ -7,6 +8,7 @@ import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
+import { PENDING_INVITE_CODE_KEY } from '@/lib/config';
 import { supabase } from '@/lib/supabase';
 
 export default function JoinClubScreen() {
@@ -15,9 +17,28 @@ export default function JoinClubScreen() {
   // direkt vor, statt dass der Code manuell abgetippt werden muss.
   const { code } = useLocalSearchParams<{ code?: string }>();
   const [inviteCode, setInviteCode] = useState(code ?? '');
+  const [checkingAuth, setCheckingAuth] = useState(true);
+  const [needsLogin, setNeedsLogin] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [club, setClub] = useState<{ club_id: string; club_name: string } | null>(null);
+
+  useEffect(() => {
+    (async () => {
+      const { data } = await supabase.auth.getSession();
+      if (!data.session) {
+        // Ein geteilter Link wird meist von jemandem ohne aktive Session
+        // geöffnet (join_club_by_invite_code ist ohnehin nur für
+        // eingeloggte User freigegeben) – der Code muss den Umweg über
+        // Login/Registrierung überstehen, statt verloren zu gehen.
+        if (code) {
+          await AsyncStorage.setItem(PENDING_INVITE_CODE_KEY, code);
+        }
+        setNeedsLogin(true);
+      }
+      setCheckingAuth(false);
+    })();
+  }, [code]);
 
   async function handleJoin() {
     if (!inviteCode) {
@@ -43,6 +64,20 @@ export default function JoinClubScreen() {
     if (joined) {
       setClub({ club_id: joined.club_id, club_name: joined.club_name });
     }
+  }
+
+  if (checkingAuth) {
+    return (
+      <ThemedView style={styles.container}>
+        <SafeAreaView style={styles.safeArea}>
+          <ActivityIndicator />
+        </SafeAreaView>
+      </ThemedView>
+    );
+  }
+
+  if (needsLogin) {
+    return <Redirect href="/login" />;
   }
 
   if (club) {

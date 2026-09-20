@@ -1,3 +1,4 @@
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { router } from 'expo-router';
 import { useState } from 'react';
 import { ActivityIndicator, Pressable, StyleSheet, TextInput } from 'react-native';
@@ -7,6 +8,7 @@ import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
+import { PENDING_INVITE_CODE_KEY } from '@/lib/config';
 import { getCurrentMember } from '@/lib/member';
 import { supabase } from '@/lib/supabase';
 
@@ -45,6 +47,16 @@ export default function LoginScreen() {
     // eingeloggt" zeigen.
     if (mode === 'signUp' && !data.session) {
       setError('Fast geschafft: Bitte bestätige deine E-Mail-Adresse über den Link, den wir dir geschickt haben, und melde dich danach hier an.');
+      return;
+    }
+
+    // Kam der User über einen Einladungslink ohne aktive Session (siehe
+    // join-club.tsx), führt der Weg jetzt zurück dorthin statt zu
+    // /create-club – Beitreten war die eigentliche Absicht.
+    const pendingInviteCode = await AsyncStorage.getItem(PENDING_INVITE_CODE_KEY);
+    if (pendingInviteCode) {
+      await AsyncStorage.removeItem(PENDING_INVITE_CODE_KEY);
+      router.replace({ pathname: '/join-club', params: { code: pendingInviteCode } });
       return;
     }
 

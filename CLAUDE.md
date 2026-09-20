@@ -873,7 +873,12 @@ genau wie in `kasse.tsx`.
   gesehen) – für echten Vereinsbetrieb mit mehreren Mitgliedern, die
   sich registrieren, müsste vermutlich ein eigener SMTP-Server im
   Supabase-Dashboard hinterlegt werden (Authentication → Emails → SMTP
-  Settings), siehe "Offene Punkte".
+  Settings), siehe "Offene Punkte". Nach erfolgreichem Login/Registrieren
+  (mit Session) wird zuerst `AsyncStorage` auf einen per `join-club.tsx`
+  hinterlegten `pendingInviteCode` geprüft (siehe dort) – falls
+  vorhanden, geht es zu `/join-club?code=...` statt zu
+  `/create-club`/`/events`, der Code wird danach aus dem Storage
+  entfernt.
 - `kegelclub-app/src/app/create-club.tsx` – legt einen Club an (`insert` in `club`) und
   trägt den eingeloggten User direkt danach als ersten Admin in
   `member` ein; zeigt anschließend Club-ID und Einladungscode an, mit
@@ -886,7 +891,31 @@ genau wie in `kasse.tsx`.
   optional einen `code`-Query-Parameter (`useLocalSearchParams`) und
   füllt das Eingabefeld damit vor – Ziel eines per `club-settings.tsx`
   geteilten Links (`<WEB_APP_URL>/join-club?code=...`), Nutzer muss den
-  Code nicht mehr abtippen.
+  Code nicht mehr abtippen. **Session-Check beim Öffnen** (Nutzerwunsch,
+  nachdem klar wurde: `join_club_by_invite_code` ist per `grant execute
+  ... to authenticated` nur für eingeloggte User freigegeben – ein per
+  Link geöffneter, aber nicht eingeloggter Besucher bekam bisher gar
+  keine sinnvolle Fehlermeldung, sondern einen rohen Permission-Fehler
+  von PostgREST): prüft beim Mount `supabase.auth.getSession()`
+  (gleiches Muster wie `(tabs)/index.tsx`); ohne Session wird der Code
+  (falls vorhanden) unter dem Key `PENDING_INVITE_CODE_KEY` (`lib/
+  config.ts`) in `AsyncStorage` zwischengespeichert und per
+  `<Redirect href="/login" />` weitergeleitet, statt das Formular zu
+  zeigen. `login.tsx` liest diesen Wert nach erfolgreichem Login/
+  Registrieren wieder aus und leitet direkt zu `/join-club?code=...`
+  zurück (siehe dort) – der Code übersteht damit den Umweg über
+  Anmeldung/Registrierung. `AsyncStorage` direkt (nicht der
+  Supabase-Client) ist hier bewusst auch auf Web sicher nutzbar: der
+  Zugriff passiert ausschließlich in einem `useEffect` (läuft nie
+  während des Static-Renderings/SSR, nur nach der Hydration im echten
+  Browser) – anders als der Storage-Adapter des Supabase-Clients in
+  `lib/supabase.ts`, der beim Erzeugen auf Modulebene läuft und deshalb
+  auf Web bewusst weggelassen wird. Live end-to-end gegen die
+  Cloud-Instanz verifiziert (Testaccounts über die Auth-Admin-API
+  angelegt): abgemeldeter Besucher → Redirect zu `/login` + Code
+  landet in `localStorage`; Login → Redirect zurück zu
+  `/join-club?code=...` mit vorausgefülltem Feld; "Beitreten" → Beitritt
+  erfolgreich, `pendingInviteCode` danach aus dem Storage entfernt.
 - `kegelclub-app/src/app/events.tsx` – listet die Kegelabende des
   eigenen Clubs (`getCurrentMember()` → `club_id`), zeigt pro Event
   die eigene Zu-/Absage und erlaubt sie per Tap zu ändern (Upsert auf
@@ -1241,6 +1270,9 @@ genau wie in `kasse.tsx`.
   EAS-Hosting-URL (`https://kegelclub.expo.app`), einziger Verwender
   bisher `club-settings.tsx` für den teilbaren Einladungslink. Muss
   von Hand angepasst werden, falls die Hosting-Domain sich ändert.
+  `PENDING_INVITE_CODE_KEY`: `AsyncStorage`-Key, über den `join-club.tsx`
+  und `login.tsx` einen Einladungscode über den Login-/Registrierungs-
+  Umweg hinweg austauschen (siehe dort).
 - `kegelclub-app/src/lib/zehnerSpiel.ts` – `computeZehnerPenalties()`
   (Migration 26): rekonstruiert die Strafenverteilung des 10er-Spiels
   (genau getroffen -> alle Teilnehmer außer Werfer zahlen,
