@@ -1355,13 +1355,29 @@ Bereits erledigt:
   (`https://znzhpqawevanxgkqpjin.supabase.co`) und `_ANON_KEY` (Legacy-
   JWT-Format, gleiches Format wie lokal in `.env`) per `eas env:set` im
   `production`-Environment hinterlegt.
-- **Noch zu tun (nicht mehr blockiert, aber noch nicht gemacht):** die
-  lokale `kegelclub-app/.env` zeigt weiterhin auf die lokale
-  Docker-Instanz – das ist für die lokale Entwicklung auch richtig so
-  (Tech-Stack: "identischer Client-Code gegen Cloud-/self-hosted
-  Projekt, nur URL/Keys wechseln"); die Cloud-Werte gelten nur über die
-  EAS-`production`-Umgebung für den TestFlight-Build, nicht für den
-  Dev-Server.
+- **`kegelclub-app/.env` zeigt aktuell auf die Cloud-Instanz** (zum
+  Web-Testen umgeschaltet, siehe unten) statt auf lokales Docker – die
+  ursprünglichen lokalen Docker-Werte liegen gesichert in
+  `kegelclub-app/.env.docker.local` (per `cp .env.docker.local .env`
+  zurückwechselbar für lokale Feature-Entwicklung). Beide Dateien
+  bleiben über `.env*` / `.env*.local` in `.gitignore` (kein Secret im
+  Repo).
+- **Web-Hosting ohne `localhost`:** Nutzerwunsch, die App auch ohne
+  laufenden Dev-Server/PC testen zu können. Deployt über **EAS
+  Hosting** (`npx expo export --platform web` exportiert den
+  `web.output: "static"`-Build, `eas deploy --prod --non-interactive
+  --dev-domain kegelclub` deployt und promotet ihn) auf
+  **`https://kegelclub.expo.app`** – läuft gegen die Cloud-Supabase-
+  Instanz (aus der zur Exportzeit aktiven `.env`, siehe oben), von
+  überall erreichbar, keine Abhängigkeit mehr vom eigenen WLAN/PC.
+  Erster Aufruf der frisch zugewiesenen Produktions-Subdomain lieferte
+  kurzzeitig `404 Worker Deployment Not Found` (CDN-Propagierung nach
+  Erstzuweisung, per Polling nach ca. 40s aufgelöst, seitdem stabil
+  `200`) – kein wiederkehrendes Problem, nur beim allerersten Deploy
+  einer neuen Subdomain zu erwarten. Erneutes Deployment nach jeder
+  Code-Änderung nötig (kein automatisches CI/CD an Git-Pushes
+  angebunden); Web dient laut Tech-Stack-Entscheidung weiterhin nur als
+  eingeloggtes Vereins-Dashboard, nicht als öffentliche Marketing-Seite.
 
 Noch offen, jeweils nur vom Projektinhaber selbst durchführbar
 (Accounts/Zahlungsdaten):
