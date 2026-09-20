@@ -855,14 +855,38 @@ genau wie in `kasse.tsx`.
   AsyncStorage-Adapter (nur native, siehe Hinweis oben zu Web/SSR).
 - `kegelclub-app/src/app/login.tsx` – Registrierung/Login per E-Mail/Passwort
   (`supabase.auth.signUp` / `signInWithPassword`), leitet nach Erfolg
-  zu `/create-club` weiter.
+  zu `/create-club` weiter. **Echter Bug, beim ersten Cloud-Test
+  gefunden:** nach `signUp()` wurde nie geprüft, ob überhaupt eine
+  Session zustande kam – lokal (`enable_confirmations = false` in
+  `config.toml`) ist das immer der Fall, auf der Cloud-Instanz
+  (E-Mail-Bestätigung standardmäßig aktiv) liefert `signUp()` aber
+  zunächst `session: null`, bis der Bestätigungslink angeklickt wurde.
+  Die App navigierte trotzdem blind zu `/create-club`, wo
+  `supabase.auth.getUser()` dann leer war und `create-club.tsx` nur
+  "Nicht eingeloggt." zeigte – für den Nutzer nicht nachvollziehbar,
+  woher der Fehler kam. Fix: `if (mode === 'signUp' && !data.session)`
+  zeigt jetzt direkt nach dem Registrieren einen Hinweis, die
+  E-Mail-Adresse zu bestätigen, statt weiterzuleiten. **Bekannte
+  Einschränkung, noch nicht behoben:** Supabase's eingebauter
+  E-Mail-Versand hat ein sehr niedriges Standard-Rate-Limit (beim
+  Testen live "email rate limit exceeded" nach wenigen Registrierungen
+  gesehen) – für echten Vereinsbetrieb mit mehreren Mitgliedern, die
+  sich registrieren, müsste vermutlich ein eigener SMTP-Server im
+  Supabase-Dashboard hinterlegt werden (Authentication → Emails → SMTP
+  Settings), siehe "Offene Punkte".
 - `kegelclub-app/src/app/create-club.tsx` – legt einen Club an (`insert` in `club`) und
   trägt den eingeloggten User direkt danach als ersten Admin in
-  `member` ein; zeigt anschließend Club-ID und Einladungscode an.
-  Verlinkt auf `/join-club` für User mit vorhandenem Einladungscode.
+  `member` ein; zeigt anschließend Club-ID und Einladungscode an, mit
+  Hinweis, dass Code/Link später in den Club-Einstellungen wieder
+  einsehbar sind. Verlinkt auf `/join-club` für User mit vorhandenem
+  Einladungscode.
 - `kegelclub-app/src/app/join-club.tsx` – nimmt einen Einladungscode
   entgegen, ruft die RPC `join_club_by_invite_code` auf und zeigt den
-  Club-Namen bei Erfolg an. Verlinkt zurück auf `/create-club`.
+  Club-Namen bei Erfolg an. Verlinkt zurück auf `/create-club`. Liest
+  optional einen `code`-Query-Parameter (`useLocalSearchParams`) und
+  füllt das Eingabefeld damit vor – Ziel eines per `club-settings.tsx`
+  geteilten Links (`<WEB_APP_URL>/join-club?code=...`), Nutzer muss den
+  Code nicht mehr abtippen.
 - `kegelclub-app/src/app/events.tsx` – listet die Kegelabende des
   eigenen Clubs (`getCurrentMember()` → `club_id`), zeigt pro Event
   die eigene Zu-/Absage und erlaubt sie per Tap zu ändern (Upsert auf
@@ -1064,7 +1088,29 @@ genau wie in `kasse.tsx`.
   Sammelbuchungs-Funktion (z.B. "Jahresbeitrag für alle auf einmal")
   als erste, einfache Version.
 - `kegelclub-app/src/app/club-settings.tsx` – Admin/Kassierer
-  bearbeiten `club.kegelgeld_cents` und die Hausnummer-Strafformel-
+  sehen zuoberst eine **Einladungscode**-Sektion (Nutzerwunsch, nachdem
+  der Code nach dem Anlegen nur einmalig auf `create-club.tsx` sichtbar
+  war und sich sonst gemerkt werden musste): zeigt `club.invite_code`
+  mit "Code kopieren"/"Link kopieren" (per `expo-clipboard`, kurzes
+  "Kopiert!"-Feedback statt Alert/Toast) sowie "Neuen Code generieren"
+  (zwei Taps als Bestätigung, analog `confirmingGameId` in
+  `events.tsx` – Hinweistext warnt, dass alte Codes/Links danach
+  ungültig werden). Die Regenerierung läuft als direktes `update` auf
+  `club.invite_code` (client-seitig per `generateInviteCode()` erzeugt,
+  8 Hex-Zeichen wie das ursprüngliche DB-Default aus Migration 1) statt
+  einer RPC – die bestehende `club_update_staff`-Policy (Migration 14)
+  erlaubt Admin/Kassierer bereits das Schreiben beliebiger Club-Spalten,
+  keine zusätzliche Berechtigungslogik nötig. Der "Link
+  kopieren"-Button baut `<WEB_APP_URL>/join-club?code=<code>`
+  (`WEB_APP_URL` aus der neuen `lib/config.ts`, aktuell
+  `https://kegelclub.expo.app`) – `join-club.tsx` liest diesen
+  Query-Parameter und füllt das Feld vor, siehe dort. Live gegen die
+  Cloud-Instanz verifiziert (Account über die Auth-Admin-API angelegt,
+  um das E-Mail-Rate-Limit beim Testen zu umgehen): Code
+  kopieren/Link kopieren zeigen "Kopiert!", Neu-Generieren ändert den
+  Code sowohl in der UI als auch nachweislich in der DB, der
+  generierte Link füllt `join-club.tsx` korrekt vor. Bearbeiten
+  `club.kegelgeld_cents` und die Hausnummer-Strafformel-
   Standardwerte (Maximalbetrag, Modus, Reduzierung) direkt in der App
   – vorher nur über die Datenbank änderbar. Selbes Formel-Formular
   wie in `enter-score.tsx` (Maximalbetrag/Modus-Umschalter/Reduzierung
@@ -1191,6 +1237,10 @@ genau wie in `kasse.tsx`.
   (`JJJJ-MM-TT`) gearbeitet (u.a. für die RPC `create_event_series` und
   `new Date(...)`-Konstruktion), `germanDateToIso()` übersetzt die
   Nutzereingabe dorthin und liefert `null` bei ungültigem Format.
+- `kegelclub-app/src/lib/config.ts` – `WEB_APP_URL`: die öffentliche
+  EAS-Hosting-URL (`https://kegelclub.expo.app`), einziger Verwender
+  bisher `club-settings.tsx` für den teilbaren Einladungslink. Muss
+  von Hand angepasst werden, falls die Hosting-Domain sich ändert.
 - `kegelclub-app/src/lib/zehnerSpiel.ts` – `computeZehnerPenalties()`
   (Migration 26): rekonstruiert die Strafenverteilung des 10er-Spiels
   (genau getroffen -> alle Teilnehmer außer Werfer zahlen,
@@ -1442,6 +1492,15 @@ Noch offen, jeweils nur vom Projektinhaber selbst durchführbar
   den eigentlichen Versand wiederverwenden, bräuchte aber zusätzlich
   den `SUPABASE_SERVICE_ROLE_KEY` als Secret, da ohne eingeloggten User
   kein Auth-Header für `verify_jwt` existiert).
+- **Eigener SMTP-Server für Supabase Auth** (Idee, noch nicht
+  umgesetzt): Supabase's eingebauter E-Mail-Versand für
+  Bestätigungs-/Reset-Mails hat ein niedriges Standard-Rate-Limit,
+  live beim Testen als `"email rate limit exceeded"` nach wenigen
+  Registrierungen aufgetreten (siehe `login.tsx` in App-Code). Für
+  echten Betrieb mit mehreren sich registrierenden Clubmitgliedern
+  müsste im Dashboard unter Authentication → Emails ein eigener
+  SMTP-Server (z.B. bestehender E-Mail-Provider oder ein Dienst wie
+  Resend/Postmark) hinterlegt werden.
 - SEPA-Lastschrift-Anbindung im Detail (Gläubiger-ID, Mandatsverwaltung)
 - Ob/wann self-hosted Supabase (Hetzner) statt Managed Supabase nötig wird
 - Separate öffentliche Marketing-/Landingpage (Format noch offen)

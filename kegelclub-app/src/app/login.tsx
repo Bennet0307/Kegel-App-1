@@ -26,7 +26,7 @@ export default function LoginScreen() {
     setLoading(true);
     setError(null);
 
-    const { error: authError } =
+    const { data, error: authError } =
       mode === 'signUp'
         ? await supabase.auth.signUp({ email, password })
         : await supabase.auth.signInWithPassword({ email, password });
@@ -35,6 +35,16 @@ export default function LoginScreen() {
 
     if (authError) {
       setError(authError.message);
+      return;
+    }
+
+    // Wenn die Supabase-Instanz E-Mail-Bestätigung verlangt (Cloud-Default,
+    // lokal per enable_confirmations=false deaktiviert), liefert signUp()
+    // noch keine Session – ohne diese Prüfung würde die App trotzdem
+    // weiterleiten und auf der nächsten Seite ein verwirrendes "Nicht
+    // eingeloggt" zeigen.
+    if (mode === 'signUp' && !data.session) {
+      setError('Fast geschafft: Bitte bestätige deine E-Mail-Adresse über den Link, den wir dir geschickt haben, und melde dich danach hier an.');
       return;
     }
 

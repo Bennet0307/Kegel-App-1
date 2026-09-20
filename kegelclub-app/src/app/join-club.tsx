@@ -1,4 +1,4 @@
-import { router } from 'expo-router';
+import { router, useLocalSearchParams } from 'expo-router';
 import { useState } from 'react';
 import { ActivityIndicator, Pressable, StyleSheet, TextInput } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -11,7 +11,10 @@ import { supabase } from '@/lib/supabase';
 
 export default function JoinClubScreen() {
   const theme = useTheme();
-  const [inviteCode, setInviteCode] = useState('');
+  // Ein per club-settings.tsx geteilter Link (?code=...) füllt das Feld
+  // direkt vor, statt dass der Code manuell abgetippt werden muss.
+  const { code } = useLocalSearchParams<{ code?: string }>();
+  const [inviteCode, setInviteCode] = useState(code ?? '');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [club, setClub] = useState<{ club_id: string; club_name: string } | null>(null);

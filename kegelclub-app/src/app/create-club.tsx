@@ -70,6 +70,10 @@ export default function CreateClubScreen() {
           </ThemedText>
           <ThemedText>Club-ID: {club.id}</ThemedText>
           <ThemedText type="smallBold">Einladungscode: {club.invite_code}</ThemedText>
+          <ThemedText type="small" themeColor="textSecondary">
+            Du findest den Code (und einen teilbaren Link) später jederzeit wieder in den
+            Club-Einstellungen.
+          </ThemedText>
 
           <Pressable
             style={[styles.button, { backgroundColor: theme.backgroundElement }]}

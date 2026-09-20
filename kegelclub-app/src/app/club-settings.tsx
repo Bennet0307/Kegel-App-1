@@ -1,3 +1,4 @@
+import * as Clipboard from 'expo-clipboard';
 import { useEffect, useState } from 'react';
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, TextInput } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -6,9 +7,15 @@ import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
+import { WEB_APP_URL } from '@/lib/config';
 import { centsToEuroString, euroStringToCents } from '@/lib/money';
 import { getCurrentMember } from '@/lib/member';
 import { supabase } from '@/lib/supabase';
+
+function generateInviteCode() {
+  const chars = '0123456789abcdef';
+  return Array.from({ length: 8 }, () => chars[Math.floor(Math.random() * chars.length)]).join('');
+}
 
 type PenaltyMode = 'fest' | 'prozent';
 type TieMode = 'alle_zahlen' | 'keiner_zahlt' | 'geteilt';
@@ -29,6 +36,10 @@ export default function ClubSettingsScreen() {
   const theme = useTheme();
   const [clubId, setClubId] = useState<string | null>(null);
   const [isStaff, setIsStaff] = useState(false);
+  const [inviteCode, setInviteCode] = useState('');
+  const [confirmingRegenerate, setConfirmingRegenerate] = useState(false);
+  const [regenerating, setRegenerating] = useState(false);
+  const [copied, setCopied] = useState<'code' | 'link' | null>(null);
   const [kegelgeldEuro, setKegelgeldEuro] = useState('');
   const [maxEuro, setMaxEuro] = useState('');
   const [penaltyMode, setPenaltyMode] = useState<PenaltyMode>('fest');
@@ -63,7 +74,7 @@ export default function ClubSettingsScreen() {
       const { data: clubRow, error: clubError } = await supabase
         .from('club')
         .select(
-          'kegelgeld_cents, hausnummer_penalty_max_cents, hausnummer_penalty_mode, hausnummer_penalty_step_cents, hausnummer_penalty_step_percent, king_surcharge_tie_mode, auto_archive_days, late_penalty_mode, late_penalty_cents, late_penalty_interval_minutes, late_penalty_interval_cents, zehner_max_pins, zehner_step_cents',
+          'invite_code, kegelgeld_cents, hausnummer_penalty_max_cents, hausnummer_penalty_mode, hausnummer_penalty_step_cents, hausnummer_penalty_step_percent, king_surcharge_tie_mode, auto_archive_days, late_penalty_mode, late_penalty_cents, late_penalty_interval_minutes, late_penalty_interval_cents, zehner_max_pins, zehner_step_cents',
         )
         .eq('id', currentMember.club_id)
         .single();
@@ -74,6 +85,7 @@ export default function ClubSettingsScreen() {
         return;
       }
 
+      setInviteCode(clubRow.invite_code);
       setKegelgeldEuro(centsToEuroString(clubRow.kegelgeld_cents));
       setMaxEuro(centsToEuroString(clubRow.hausnummer_penalty_max_cents));
       setPenaltyMode(clubRow.hausnummer_penalty_mode as PenaltyMode);
@@ -103,6 +115,37 @@ export default function ClubSettingsScreen() {
       setLoading(false);
     })();
   }, []);
+
+  async function handleCopyCode() {
+    await Clipboard.setStringAsync(inviteCode);
+    setCopied('code');
+  }
+
+  async function handleCopyLink() {
+    await Clipboard.setStringAsync(`${WEB_APP_URL}/join-club?code=${inviteCode}`);
+    setCopied('link');
+  }
+
+  async function handleRegenerateCode() {
+    if (!clubId) return;
+
+    setRegenerating(true);
+    setError(null);
+    setCopied(null);
+
+    const newCode = generateInviteCode();
+    const { error: updateError } = await supabase.from('club').update({ invite_code: newCode }).eq('id', clubId);
+
+    setRegenerating(false);
+    setConfirmingRegenerate(false);
+
+    if (updateError) {
+      setError(updateError.message);
+      return;
+    }
+
+    setInviteCode(newCode);
+  }
 
   async function handleSave() {
     if (!clubId) return;
@@ -223,6 +266,37 @@ export default function ClubSettingsScreen() {
           <ThemedText type="title" style={styles.title}>
             Club-Einstellungen
           </ThemedText>
+
+          <ThemedText type="small" themeColor="textSecondary">
+            Einladungscode
+          </ThemedText>
+          <ThemedView type="backgroundElement" style={styles.inviteCodeBox}>
+            <ThemedText type="smallBold">{inviteCode}</ThemedText>
+          </ThemedView>
+          <ThemedView style={styles.typeRow}>
+            <Pressable
+              style={[styles.typeButton, { backgroundColor: theme.backgroundElement }]}
+              onPress={handleCopyCode}>
+              <ThemedText type="small">{copied === 'code' ? 'Kopiert!' : 'Code kopieren'}</ThemedText>
+            </Pressable>
+            <Pressable
+              style={[styles.typeButton, { backgroundColor: theme.backgroundElement }]}
+              onPress={handleCopyLink}>
+              <ThemedText type="small">{copied === 'link' ? 'Kopiert!' : 'Link kopieren'}</ThemedText>
+            </Pressable>
+          </ThemedView>
+          {regenerating ? (
+            <ActivityIndicator />
+          ) : (
+            <Pressable
+              onPress={() => (confirmingRegenerate ? handleRegenerateCode() : setConfirmingRegenerate(true))}>
+              <ThemedText type="small" style={styles.deleteLink}>
+                {confirmingRegenerate
+                  ? 'Wirklich neuen Code generieren? Alte Codes/Links werden ungültig.'
+                  : 'Neuen Code generieren'}
+              </ThemedText>
+            </Pressable>
+          )}
 
           <ThemedText type="small" themeColor="textSecondary">
             Kegelgeld pro Teilnahme (€)
@@ -461,6 +535,15 @@ const styles = StyleSheet.create({
     borderRadius: Spacing.two,
     paddingHorizontal: Spacing.three,
     fontSize: 16,
+  },
+  inviteCodeBox: {
+    height: 48,
+    borderRadius: Spacing.two,
+    paddingHorizontal: Spacing.three,
+    justifyContent: 'center',
+  },
+  deleteLink: {
+    color: '#d33',
   },
   penaltyRow: {
     flexDirection: 'row',
